@@ -209,6 +209,23 @@ export function pickQuestions(
 }
 
 /**
+ * Moves the shortest sentence (fewest tiles) to the front, keeping the rest
+ * in their order. A fully random order can open a run with the longest,
+ * hardest sentence of the draw, before the player has warmed up; a short
+ * first question gets them a quick success to start from. Only the opening
+ * slot is touched — ramping the whole run from easy to hard would make every
+ * run end on its hardest questions, when lives are lowest.
+ */
+export function warmUpFirst(questions: readonly Question[]): Question[] {
+  if (questions.length === 0) return []
+  const shortest = questions.reduce(
+    (best, question, i) => (question.words.length < questions[best].words.length ? i : best),
+    0,
+  )
+  return [questions[shortest], ...questions.filter((_, i) => i !== shortest)]
+}
+
+/**
  * Questions for a dedicated review run: only what's due (`dueIds`) and each
  * one's same-grammar sibling, capped at `count`. Empty when nothing is due.
  */

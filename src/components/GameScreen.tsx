@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { getLevel } from '../data/levels'
-import { pickGrammarQuestions, pickQuestions, pickReviewQuestions, questionsByIds } from '../data/questions'
+import { pickGrammarQuestions, pickQuestions, pickReviewQuestions, questionsByIds, warmUpFirst } from '../data/questions'
 import { useSoundContext } from '../context/sound'
 import { useSettingsContext } from '../context/settings'
 import { saveBestResultIfBetter } from '../utils/storage'
@@ -149,15 +149,16 @@ function focusQuestions(levelId: LevelId, focus: FocusSession): Question[] {
 }
 
 /** The opening draw for a run: a focus run's hand-picked set, or a normal
- * draw. */
+ * draw, opening with its shortest sentence (see warmUpFirst). A grammar
+ * drill keeps its own order, which leads with the drilled point. */
 function initialQuestions(levelId: LevelId, mode: GameMode, focus: FocusSession | undefined): Question[] {
   if (focus) {
     const picked = focusQuestions(levelId, focus)
     // Callers only offer a focus run that has questions, but a stale id list
     // (the bank changed between runs) mustn't leave the run with nothing.
-    if (picked.length > 0) return picked
+    if (picked.length > 0) return focus.kind === 'grammar' ? picked : warmUpFirst(picked)
   }
-  return drawQuestions(levelId, mode === 'endless' ? ENDLESS_BATCH : QUESTIONS_PER_SESSION)
+  return warmUpFirst(drawQuestions(levelId, mode === 'endless' ? ENDLESS_BATCH : QUESTIONS_PER_SESSION))
 }
 
 /** With the first-word capital hint off, the sentence-initial tile loses

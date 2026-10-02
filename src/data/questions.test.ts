@@ -6,6 +6,7 @@ import {
   pickQuestions,
   pickReviewQuestions,
   questionsByIds,
+  warmUpFirst,
   QUESTIONS,
   QUESTIONS_BY_GRAMMAR,
   MAX_WORDS_PER_QUESTION,
@@ -272,6 +273,33 @@ describe('question length cap', () => {
     // handful of outliers, not a meaningful share of the questions.
     for (const levelId of LEVEL_IDS) {
       expect(QUESTIONS[levelId].length).toBeGreaterThan(100)
+    }
+  })
+})
+
+describe('warmUpFirst', () => {
+  const sentence = (id: string, length: number) => ({ id, jp: id, words: Array.from({ length }, (_, i) => `w${i}`) })
+
+  it('opens with the shortest sentence and keeps the rest in order', () => {
+    const picked = warmUpFirst([sentence('a', 7), sentence('b', 9), sentence('c', 4), sentence('d', 6)])
+    expect(picked.map((question) => question.id)).toEqual(['c', 'a', 'b', 'd'])
+  })
+
+  it('takes the first of several equally short sentences', () => {
+    const picked = warmUpFirst([sentence('a', 5), sentence('b', 3), sentence('c', 3)])
+    expect(picked.map((question) => question.id)).toEqual(['b', 'a', 'c'])
+  })
+
+  it('handles an empty draw', () => {
+    expect(warmUpFirst([])).toEqual([])
+  })
+
+  it('keeps every question of a real draw', () => {
+    for (const levelId of LEVEL_IDS) {
+      const draw = pickQuestions(levelId, 10)
+      const warmed = warmUpFirst(draw)
+      expect(warmed.map((question) => question.id).sort()).toEqual(draw.map((question) => question.id).sort())
+      expect(warmed[0].words.length).toBe(Math.min(...draw.map((question) => question.words.length)))
     }
   })
 })

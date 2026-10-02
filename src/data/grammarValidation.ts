@@ -1,8 +1,10 @@
 import type { Question } from '../types'
+import { posOf } from './pos'
 
 /**
  * Structural sanity checks over the assembled question bank. This isn't a
- * real grammar checker — it can't tell "he go" from "he goes" — but the
+ * real grammar checker — beyond a few narrow agreement patterns below it
+ * can't judge a sentence — but the
  * templates generate hundreds of sentences per level by combining literal
  * English with vocab banks (see data/templates/*.ts), so the realistic
  * failure mode is a mechanical one: a leftover placeholder, a dropped
@@ -82,6 +84,76 @@ const AN_BEFORE_CONSONANT_LETTER = new Set(['hour', 'honest', 'honor', 'honour',
 
 const bare = (word: string): string => word.replace(/[.,?!]$/, '').toLowerCase()
 
+/** Clause openers after which "he/she/it" is the subject of a finite verb. */
+const CLAUSE_OPENERS = new Set([
+  'and', 'but', 'or', 'so', 'because', 'when', 'if', 'before', 'after',
+  'while', 'though', 'although', 'until', 'since', 'where', 'as',
+])
+
+/** Verbs whose past tense is spelled like the base form ("He put …"). */
+const BASE_EQUALS_PAST = new Set([
+  'put', 'cut', 'hit', 'set', 'let', 'read', 'hurt', 'cost', 'quit', 'shut', 'spread', 'beat', 'bet', 'cast',
+])
+
+/** Words after which the verb must be in its base form (modals and do-support). */
+const BASE_FORM_TRIGGERS = new Set([
+  'can', 'could', 'will', 'would', 'shall', 'should', 'may', 'might', 'must',
+  "can't", "couldn't", "won't", "wouldn't", "shouldn't", "mustn't",
+  'do', 'does', 'did', "don't", "doesn't", "didn't",
+])
+
+const SUBJECT_PRONOUNS = new Set(['i', 'you', 'he', 'she', 'it', 'we', 'they'])
+
+/**
+ * Irregular past forms, which look like a base form to the suffix rules. A
+ * "third-person subject" failure on a correct past-tense sentence means the
+ * verb belongs here.
+ */
+const IRREGULAR_PAST = new Set([
+  'ate', 'became', 'began', 'bent', 'bit', 'blew', 'bought', 'broke', 'brought', 'built',
+  'caught', 'chose', 'came', 'dealt', 'did', 'drank', 'drew', 'drove', 'dug', 'fed',
+  'fell', 'felt', 'fled', 'flew', 'forgave', 'forgot', 'fought', 'found', 'froze', 'gave',
+  'got', 'grew', 'had', 'heard', 'held', 'hid', 'hung', 'kept', 'knew', 'laid',
+  'lay', 'led', 'left', 'lent', 'lit', 'lost', 'made', 'meant', 'met', 'paid',
+  'ran', 'rang', 'rode', 'rose', 'said', 'sang', 'sank', 'sat', 'saw', 'sent',
+  'shook', 'shone', 'shot', 'slept', 'sold', 'sought', 'spent', 'spoke', 'stole', 'stood',
+  'stuck', 'struck', 'swam', 'swung', 'taught', 'thought', 'threw', 'told', 'took', 'tore',
+  'understood', 'went', 'woke', 'won', 'wore', 'wrote',
+])
+
+const isVerb = (word: string): boolean => posOf(word).has('v')
+
+/**
+ * The verb's base form if `word` is a regular past (-ed) or third-person
+ * (-s/-es) form of a verb the lexicon knows, else undefined. Words that can
+ * also be an adjective ("used", "tired") are skipped, and so are ones that
+ * can be a noun unless `nounImpossible`: a question opening with a modal is
+ * often followed by its subject ("Will students come?").
+ */
+function inflectedVerbBase(word: string, nounImpossible = false): string | undefined {
+  const pos = posOf(word)
+  if (!pos.has('v') || pos.has('a') || pos.has('m') || (pos.has('n') && !nounImpossible)) return undefined
+  const stems: string[] = []
+  if (word.endsWith('ed')) {
+    stems.push(word.slice(0, -2), word.slice(0, -1))
+    if (word.endsWith('ied')) stems.push(word.slice(0, -3) + 'y')
+    if (word.length > 4 && word[word.length - 3] === word[word.length - 4]) stems.push(word.slice(0, -3))
+  } else if (word.endsWith('s') && !word.endsWith('ss')) {
+    stems.push(word.slice(0, -1))
+    if (word.endsWith('es')) stems.push(word.slice(0, -2))
+    if (word.endsWith('ies')) stems.push(word.slice(0, -3) + 'y')
+  }
+  return stems.find((stem) => stem !== word && isVerb(stem))
+}
+
+/** A verb in its bare base form, e.g. "play" — not "plays"/"played"/"be". */
+function isBareBaseVerb(word: string): boolean {
+  const pos = posOf(word)
+  if (!pos.has('v') || pos.has('m') || pos.has('a')) return false
+  if (BASE_EQUALS_PAST.has(word) || IRREGULAR_PAST.has(word)) return false
+  return inflectedVerbBase(word) === undefined && !/(?:s|ed|ing)$/.test(word)
+}
+
 export function validateQuestion(question: Question): string[] {
   const issues: string[] = []
   const { words } = question
@@ -120,6 +192,28 @@ export function validateQuestion(question: Question): string[] {
     }
     if (i > 0 && AGREEMENT_SLIPS.has(`${bare(words[i - 1])} ${bare(word)}`)) {
       issues.push(`subject and verb do not agree: "${words[i - 1]} ${word}"`)
+    }
+    if (i > 0) {
+      const subject = bare(words[i - 1])
+      const before = i > 1 ? words[i - 2] : undefined
+      const opensClause = before === undefined || /,$/.test(before) || CLAUSE_OPENERS.has(bare(before))
+      if (['he', 'she', 'it'].includes(subject) && opensClause && isBareBaseVerb(bare(word))) {
+        issues.push(`third-person subject takes a verb in -s or past form: "${words[i - 1]} ${word}"`)
+      }
+    }
+    // "Can he plays", "Did you went", "will played": the verb after a modal
+    // or do-support must be the base form, with or without a pronoun between.
+    {
+      const verb = bare(word)
+      const afterModal = i > 0 && BASE_FORM_TRIGGERS.has(bare(words[i - 1]))
+      const afterModalAndPronoun =
+        i > 1 && SUBJECT_PRONOUNS.has(bare(words[i - 1])) && BASE_FORM_TRIGGERS.has(bare(words[i - 2]))
+      const trigger = afterModal ? words[i - 1] : afterModalAndPronoun ? `${words[i - 2]} ${words[i - 1]}` : undefined
+      // Only a modal that opens the sentence can be followed by a noun subject.
+      const nounImpossible = afterModalAndPronoun || (afterModal && i > 1)
+      if (trigger && (inflectedVerbBase(verb, nounImpossible) !== undefined || IRREGULAR_PAST.has(verb))) {
+        issues.push(`verb after "${trigger}" should be the base form: "${word}"`)
+      }
     }
     if (i + 1 < words.length) {
       const article = bare(word)

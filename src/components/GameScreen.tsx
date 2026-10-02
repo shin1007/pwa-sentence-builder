@@ -1268,7 +1268,7 @@ export default function GameScreen({
               <p className={styles.jpText}>{question.jp}</p>
             )}
             <button className={styles.speakButton} onClick={handleListen} aria-label="英語を再生する">
-              {listening ? '🔊 もう一度聞く' : '🔊 英語を再生'}
+              🔊<span className={styles.speakLabel}>{listening ? 'もう一度聞く' : '英語を再生'}</span>
             </button>
           </div>
           {question.source && (

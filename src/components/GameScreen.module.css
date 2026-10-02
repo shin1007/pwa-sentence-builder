@@ -684,3 +684,69 @@
   align-self: flex-end;
   margin-left: -0.6cqh;
 }
+
+/* Short screens (a small phone held sideways is ~320px tall). Tiles and
+ * buttons keep their tap-size floors, so the spacing around them is what
+ * gives: without this, a long sentence's second tray row ended below the
+ * bottom of the screen, reachable only by scrolling. Queried against the
+ * canvas rather than the viewport, since the canvas is rotated in portrait. */
+@container (max-height: 400px) {
+  .hud {
+    padding: 0.8cqh 1.6cqh 0.4cqh;
+  }
+
+  .promptArea {
+    padding: 0.6cqh 2cqh 0;
+  }
+
+  .jpText {
+    font-size: 0.95rem;
+  }
+
+  .speakButton {
+    min-height: 36px;
+  }
+
+  .note,
+  .sourceTag {
+    margin-top: 0.2cqh;
+    line-height: 1.3;
+  }
+
+  .timerRow {
+    margin-top: -0.4cqh;
+  }
+
+  .backButton,
+  .quitButton {
+    min-width: 36px;
+    min-height: 36px;
+  }
+
+  .actionRow {
+    min-height: 34px;
+    padding-bottom: 4px;
+  }
+
+  .confirmButton,
+  .clearAllButton {
+    min-height: 34px;
+  }
+
+  .trayArea {
+    padding: 0.4cqh 2cqh 1.2cqh;
+  }
+}
+
+/* The smallest phones (~320px tall): the play button goes icon-only, so the
+ * prompt keeps the width and stays on one line. */
+@container (max-height: 340px) {
+  .speakButton {
+    min-width: 44px;
+    padding: 0 1.2cqh;
+  }
+
+  .speakLabel {
+    display: none;
+  }
+}

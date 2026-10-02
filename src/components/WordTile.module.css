@@ -209,8 +209,10 @@
 }
 
 .slot.filled {
-  border-style: solid;
-  border-color: transparent;
+  /* No border once filled: the tile alone is already the full slot height,
+   * and a transparent border would make every filled row 5px taller than an
+   * empty one, pushing the tray down as the sentence is built. */
+  border: none;
   padding: 0;
 }
 

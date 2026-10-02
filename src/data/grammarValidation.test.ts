@@ -62,6 +62,49 @@ describe('validateQuestion', () => {
     expect(validateQuestion(q('ok', 'jp', 'He is an honest boy.'))).toEqual([])
   })
 
+  it('flags a third-person subject with a bare verb', () => {
+    expect(validateQuestion(q('bad', 'jp', 'He play tennis every day.'))).toContain(
+      'third-person subject takes a verb in -s or past form: "He play"',
+    )
+    expect(validateQuestion(q('bad', 'jp', 'I stay home when it rain.'))).toContain(
+      'third-person subject takes a verb in -s or past form: "it rain."',
+    )
+  })
+
+  it('accepts a bare verb where the grammar calls for one', () => {
+    for (const sentence of [
+      'He plays tennis every day.',
+      'He put the book on the desk.',
+      'She found the key.',
+      'Does he play tennis?',
+      'Can she swim?',
+      'Let it go.',
+      'I made him study.',
+    ]) {
+      expect(validateQuestion(q('ok', 'jp', sentence))).toEqual([])
+    }
+  })
+
+  it('flags an inflected verb after a modal or do-support', () => {
+    expect(validateQuestion(q('bad', 'jp', 'She can plays the piano.'))).toContain(
+      'verb after "can" should be the base form: "plays"',
+    )
+    expect(validateQuestion(q('bad', 'jp', 'Did you went to the park?'))).toContain(
+      'verb after "Did you" should be the base form: "went"',
+    )
+    expect(validateQuestion(q('bad', 'jp', 'He will visited Kyoto.'))).toContain(
+      'verb after "will" should be the base form: "visited"',
+    )
+    expect(validateQuestion(q('bad', 'jp', "She doesn't likes cats."))).toContain(
+      'verb after "doesn\'t" should be the base form: "likes"',
+    )
+  })
+
+  it('leaves a noun reading after a modal alone', () => {
+    expect(validateQuestion(q('ok', 'jp', 'Will students come tomorrow?'))).toEqual([])
+    expect(validateQuestion(q('ok', 'jp', 'You should need a pen.'))).toEqual([])
+  })
+
   it('flags a sentence with fewer than two words', () => {
     expect(validateQuestion(q('bad', 'jp', 'Hi.'))).toEqual(['sentence is too short (1 word)'])
   })

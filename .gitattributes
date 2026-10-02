@@ -1,0 +1,9 @@
+# Keep LF in the working tree on every OS. Generated files such as
+# src/data/posLexicon.generated.ts are compared byte-for-byte with the
+# generator output in tests, which fails under core.autocrlf=true on Windows.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.woff2 binary
+# Vendored data kept byte-identical to the upstream download.
+scripts/data/*.csv -text

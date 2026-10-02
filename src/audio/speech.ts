@@ -74,3 +74,14 @@ export function speakEnglish(text: string) {
 export function speakJapanese(text: string) {
   return speak(text, 'ja-JP', 1)
 }
+
+/** Cuts off whatever is being read aloud. Any pending speak() promise
+ * resolves, since cancelling fires the utterance's error/end event. */
+export function stopSpeaking() {
+  if (!isSpeechSupported()) return
+  try {
+    window.speechSynthesis.cancel()
+  } catch {
+    /* nothing to cancel */
+  }
+}

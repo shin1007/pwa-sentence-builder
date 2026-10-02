@@ -13,7 +13,9 @@
 }
 
 .tile {
-  min-height: 8.8cqh;
+  /* 8.8cqh is only ~34px on a landscape phone; words are the main thing
+   * being tapped, so they get a floor closer to a comfortable thumb size. */
+  min-height: max(8.8cqh, 38px);
   min-width: 52px;
   padding: 0.6cqh 2cqh;
   border-radius: 16px;
@@ -27,6 +29,59 @@
   transition: transform 0.1s ease, box-shadow 0.1s ease, opacity 0.15s ease;
   animation: pop-in 0.28s cubic-bezier(0.34, 1.56, 0.64, 1) both;
   white-space: nowrap;
+  position: relative;
+  /* Dragging starts on the tile itself, so the browser must not grab the
+   * gesture for scrolling, and a long press must not open a callout. */
+  touch-action: none;
+  -webkit-touch-callout: none;
+}
+
+/* Invisible hit area reaching into the gaps around the tile, so a tap that
+ * lands just off the edge still counts instead of doing nothing. */
+.tile::after {
+  content: '';
+  position: absolute;
+  inset: -0.8cqh -0.5cqh;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tile:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.06);
+  }
+}
+
+/* Slot tiles arrive by flying in from the tray (a script animation in
+ * GameScreen), so the tray's pop-in would only fight it. */
+.tile.landed {
+  animation: none;
+}
+
+/* Lifted under the finger: the transform itself is set from script. */
+.tile.dragging {
+  z-index: 20;
+  pointer-events: none;
+  transition: none;
+  animation: none;
+  box-shadow: 0 14px 0 rgba(0, 0, 0, 0.18), 0 22px 30px rgba(0, 0, 0, 0.4);
+  filter: brightness(1.05);
+}
+
+.hotkey {
+  display: none;
+  position: absolute;
+  top: 3px;
+  left: 6px;
+  font-size: 0.5em;
+  font-weight: 800;
+  opacity: 0.45;
+  line-height: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .hotkey {
+    display: block;
+  }
 }
 
 .tile:active {
@@ -68,6 +123,7 @@
 /* Points out exactly which placed words are in the wrong spot, once a wrong
  * answer has been scored, instead of leaving learners to spot it themselves. */
 .tile.mismatch {
+  animation: tile-shake 0.4s ease both;
   box-shadow: 0 0 0 3px var(--color-danger), 0 5px 0 rgba(0, 0, 0, 0.28), 0 10px 16px rgba(0, 0, 0, 0.3);
 }
 
@@ -93,7 +149,7 @@
 }
 
 .slot {
-  min-height: 8.8cqh;
+  min-height: max(8.8cqh, 38px);
   min-width: 52px;
   border-radius: 16px;
   border: 2.5px dashed rgba(255, 255, 255, 0.65);
@@ -102,8 +158,69 @@
   justify-content: center;
 }
 
+@keyframes slot-next {
+  0%,
+  100% {
+    border-color: rgba(255, 255, 255, 0.65);
+    background: rgba(255, 255, 255, 0);
+  }
+  50% {
+    border-color: rgba(255, 210, 63, 0.95);
+    background: rgba(255, 210, 63, 0.1);
+  }
+}
+
+/* Where a tapped word will go next, so the eye knows where to look. */
+.slot.slotNext {
+  animation: slot-next 1.4s ease-in-out infinite;
+}
+
+.slot.slotHover {
+  border-color: var(--color-accent-yellow);
+  border-style: solid;
+  background: rgba(255, 210, 63, 0.18);
+  transform: scale(1.06);
+}
+
+.slot {
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+
+@keyframes cheer {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  35% {
+    transform: translateY(-14px) scale(1.08);
+    filter: brightness(1.15);
+  }
+  65% {
+    transform: translateY(2px) scale(0.98, 1.02);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* The correct sentence does a wave, word by word. */
+.tile.cheer {
+  animation: cheer 0.42s cubic-bezier(0.3, 0.7, 0.4, 1) both;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.9), 0 0 18px rgba(255, 230, 120, 0.8), 0 5px 0 rgba(0, 0, 0, 0.28);
+}
+
 .slot.filled {
   border-style: solid;
   border-color: transparent;
   padding: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tile.cheer,
+  .tile.mismatch,
+  .slot.slotNext {
+    animation: none;
+  }
+  .slot.slotNext {
+    border-color: rgba(255, 210, 63, 0.95);
+  }
 }

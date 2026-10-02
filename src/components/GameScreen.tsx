@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { getLevel } from '../data/levels'
 import { pickGrammarQuestions, pickQuestions, pickReviewQuestions, questionsByIds } from '../data/questions'
 import { useSoundContext } from '../context/sound'
@@ -12,7 +13,10 @@ import { idiomSpans, recordIdiomResult, shouldChunkIdiom } from '../utils/idiomP
 import { forgetSolved, recentlySolvedIds, recordSolved } from '../utils/solvedQuestions'
 import { phraseChunks, unitsWithSpans } from '../utils/phraseScaffold'
 import { acceptedOrders, fitsSomeOrder, isAccepted, misplacedSlots, splitFinalPunct } from '../utils/answerCheck'
-import { isSpeechSupported, speakEnglish, speakJapanese } from '../audio/speech'
+import { isSpeechSupported, speakEnglish, speakJapanese, stopSpeaking } from '../audio/speech'
+import { haptic } from '../utils/haptics'
+import { prefersReducedMotion, toCanvasDelta } from '../utils/motion'
+import { useCountUp } from '../hooks/useCountUp'
 import { grammarLabel } from '../data/grammar'
 import { keepsCapital } from '../data/capitalization'
 import { ORDER_HINTS, detectOrderMistake, type OrderMistake } from '../data/orderHints'
@@ -32,6 +36,14 @@ const ENDLESS_BATCH = 30
 const ENDLESS_REFILL_AT = 5
 const FEEDBACK_DELAY_CORRECT = 1100
 const FEEDBACK_DELAY_WRONG = 1500
+/**
+ * The feedback pause (and the English read-aloud) can be skipped with a tap,
+ * but not instantly: a tap that was already on its way when the answer got
+ * scored shouldn't throw away the result before it's even been seen. A miss
+ * waits longer, since the correct sentence is shown then and is worth a look.
+ */
+const SKIP_AFTER_CORRECT_MS = 250
+const SKIP_AFTER_WRONG_MS = 700
 /** Grace window after the last tile lands before the answer is actually
  * scored, so a player who notices a misplaced word (or two swapped) can
  * still tap a filled slot to pull it back and fix it before it counts
@@ -39,10 +51,34 @@ const FEEDBACK_DELAY_WRONG = 1500
 const CONFIRM_GRACE_MS = 650
 /** Pause on the finished sentence after rebuilding a missed answer. */
 const REBUILD_DONE_DELAY = 700
+/** How far a press has to travel before it becomes a drag instead of a tap. */
+const DRAG_THRESHOLD_PX = 8
+/** How long the back/やめる button stays armed after the first tap. */
+const QUIT_ARM_MS = 2500
 
 interface Tile {
   uid: number
   word: string
+}
+
+interface DragState {
+  uid: number
+  from: 'tray' | 'slot'
+  slotIndex: number
+  el: HTMLElement
+  pointerId: number
+  startX: number
+  startY: number
+  active: boolean
+  transform: string
+}
+
+interface Judge {
+  id: number
+  label: string
+  tone: 'perfect' | 'great' | 'good' | 'miss'
+  combo: number
+  confetti: number
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -216,6 +252,15 @@ export default function GameScreen({
   /** The typical word-order mistake the player's last wrong order showed, if
    * any (see data/orderHints.ts) — named alongside the usual hint. */
   const [orderHint, setOrderHint] = useState<OrderMistake | null>(null)
+  /** The PERFECT!/GREAT!/TIME UP! callout for the question just scored. */
+  const [judge, setJudge] = useState<Judge | null>(null)
+  const [dragUid, setDragUid] = useState<number | null>(null)
+  const [hoverSlot, setHoverSlot] = useState<number | null>(null)
+  /** First tap on back/やめる arms it; only a second tap actually leaves, so a
+   * stray thumb near the corner can't throw a run away. */
+  const [quitArmed, setQuitArmed] = useState(false)
+
+  const displayedScore = useCountUp(score)
 
   const lastTickSecond = useRef(-1)
   const advanceTimer = useRef<number | null>(null)
@@ -257,6 +302,18 @@ export default function GameScreen({
    * serving repeats.
    */
   const servedIds = useRef<Set<string>>(new Set(questions.map((q) => q.id)))
+  /** Lets a tap cut the post-answer pause short (see SKIP_AFTER_*). */
+  const skipRef = useRef<{ at: number; minMs: number; run: () => void } | null>(null)
+  const quitArmTimer = useRef<number | null>(null)
+  const boardRef = useRef<HTMLDivElement>(null)
+  const slotsAreaRef = useRef<HTMLDivElement>(null)
+  /** Tile positions just before the board changes, for the FLIP fly-in. */
+  const flipSnapshot = useRef<Map<number, DOMRect> | null>(null)
+  const dragRef = useRef<DragState | null>(null)
+  const hoverSlotRef = useRef<number | null>(null)
+  /** A drag ends with a pointerup that some browsers follow with a click on
+   * whatever is underneath; that click must not count as a tap. */
+  const suppressClickUntil = useRef(0)
 
   // Freeze the countdown while the tab/app is backgrounded so returning
   // players don't find their time silently drained (or the round already
@@ -304,6 +361,8 @@ export default function GameScreen({
     setShaky(false)
     setHintShown(false)
     setOrderHint(null)
+    setJudge(null)
+    skipRef.current = null
     const q = questions[qIndex]
     const nextAnswer = answerFor(levelId, q)
     const nextUnits = nextAnswer.units
@@ -364,9 +423,50 @@ export default function GameScreen({
       if (advanceTimer.current) window.clearTimeout(advanceTimer.current)
       if (pendingAdvance.current) document.removeEventListener('visibilitychange', pendingAdvance.current)
       if (pendingCheck.current) window.clearTimeout(pendingCheck.current.timerId)
+      if (quitArmTimer.current) window.clearTimeout(quitArmTimer.current)
     },
     [],
   )
+
+  // FLIP: whenever the board changes, every tile that moved (tray → slot,
+  // slot → tray, slot ↔ slot) flies from where it was to where it now is,
+  // instead of blinking out of one place and into another.
+  useLayoutEffect(() => {
+    const snap = flipSnapshot.current
+    flipSnapshot.current = null
+    const root = boardRef.current
+    if (!snap || !root || prefersReducedMotion()) return
+    root.querySelectorAll<HTMLElement>('[data-tile-uid]').forEach((el) => {
+      if (el.dataset.hidden) return
+      const before = snap.get(Number(el.dataset.tileUid))
+      if (!before) return
+      const after = el.getBoundingClientRect()
+      const dx = before.left + before.width / 2 - (after.left + after.width / 2)
+      const dy = before.top + before.height / 2 - (after.top + after.height / 2)
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return
+      const d = toCanvasDelta(dx, dy)
+      const dist = Math.hypot(dx, dy)
+      el.animate(
+        [
+          { transform: `translate(${d.x}px, ${d.y}px) scale(1.06)`, opacity: 1 },
+          { transform: 'translate(0, 0) scale(1.07, 0.93)', opacity: 1, offset: 0.78 },
+          { transform: 'none', opacity: 1 },
+        ],
+        { duration: Math.min(320, 170 + dist * 0.25), easing: 'cubic-bezier(0.2, 0.8, 0.3, 1)' },
+      )
+    })
+  }, [slots])
+
+  const captureFlip = () => {
+    const root = boardRef.current
+    if (!root) return
+    const rects = new Map<number, DOMRect>()
+    root.querySelectorAll<HTMLElement>('[data-tile-uid]').forEach((el) => {
+      if (el.dataset.hidden) return
+      rects.set(Number(el.dataset.tileUid), el.getBoundingClientRect())
+    })
+    flipSnapshot.current = rects
+  }
 
   /**
    * Books a question's first result this run against its grammar point, then
@@ -454,13 +554,15 @@ export default function GameScreen({
         // Combo was already reset by the wrong tap. The question stays
         // 'missed' in questionOutcome, so it's tallied as never recovered
         // at the end of the run unless it comes back and is solved cleanly.
-        sound.place()
+        sound.place(units.length - 1)
       } else if (isCorrect && isRelearn) {
         // A repeat within the run earns no points and leaves the review queue
         // alone: getting it right a few questions after being shown the answer
         // isn't the recall a wider interval is meant to reward. It still counts
         // as a recovery in the progress record.
         sound.correct()
+        haptic([12, 40, 18])
+        setJudge({ id: popIdRef.current++, label: 'NICE!', tone: 'great', combo: 0, confetti: 22 })
         recordRecovered()
         recordOutcome(question, true)
       } else if (isCorrect) {
@@ -478,8 +580,28 @@ export default function GameScreen({
         setCombo(nextCombo)
         setBestCombo(nextBestCombo)
         setCorrectCount(nextCorrect)
+        // How it went, called out big: speed sets the grade, and a hesitant
+        // answer (see isShakyAnswer) can't be a PERFECT.
+        const speed = timeLimit > 0 ? timeLeft / timeLimit : 0
+        const [label, tone]: [string, Judge['tone']] = practiceMode
+          ? ['NICE!', 'great']
+          : wasShaky
+            ? ['GOOD!', 'good']
+            : speed >= 0.6
+              ? ['PERFECT!', 'perfect']
+              : speed >= 0.35
+                ? ['GREAT!', 'great']
+                : ['GOOD!', 'good']
+        setJudge({
+          id: popIdRef.current,
+          label,
+          tone,
+          combo: nextCombo,
+          confetti: 22 + Math.min(nextCombo, 10) * 3 + (tone === 'perfect' ? 14 : 0),
+        })
         setScorePop({ id: popIdRef.current++, value: gained })
-        sound.correct()
+        sound.correct(combo, tone === 'perfect')
+        haptic([12, 40, 18])
         if (!questionOutcome.current.has(question.id)) recordReviewRecall(levelId, question.id, true)
         if (wasShaky) recordShaky(levelId, question.id)
         else recordCorrect(levelId, question.id)
@@ -512,8 +634,16 @@ export default function GameScreen({
           // A wrong tile on this question already counted against the idiom.
           if (!missedThisQuestion.current) recordIdiomResult(question, false)
         }
+        setJudge({
+          id: popIdRef.current++,
+          label: timeLeft <= 0 ? 'TIME UP!' : 'おしい！',
+          tone: 'miss',
+          combo: 0,
+          confetti: 0,
+        })
         setShake(true)
         sound.wrong()
+        haptic([40, 60, 40])
         recordOutcome(question, false)
         window.setTimeout(() => setShake(false), 450)
       }
@@ -533,15 +663,19 @@ export default function GameScreen({
 
       // If the player backgrounds the app right after answering, don't let a
       // native setTimeout silently skip them ahead while they're away —
-      // defer the advance until the tab is visible again.
+      // defer the advance until the tab is visible again. Guarded so a tap
+      // to skip and the regular timer can't both advance.
+      let advanced = false
       const advance = () => {
-        if (generation !== advanceGeneration.current) return
+        if (advanced || generation !== advanceGeneration.current) return
         if (document.hidden) {
           pendingAdvance.current = advance
           document.addEventListener('visibilitychange', advance, { once: true })
           return
         }
+        advanced = true
         pendingAdvance.current = null
+        skipRef.current = null
         if (isLastQuestion || outOfLives) {
           finishSession(nextScore, nextCorrect, nextBestCombo, nextAnswered)
         } else {
@@ -557,19 +691,34 @@ export default function GameScreen({
       // delay) so the audio for this question is never cut short. Read it
       // on a wrong answer too, alongside the "正解: ..." text, so missing a
       // question still reinforces how the correct sentence actually sounds.
+      // A player who's ready to move on can tap to skip both (skipFeedback).
       const speechDone = sound.sfxOn ? speakEnglish(question.words.join(' ')) : Promise.resolve()
       const minDelay = new Promise<void>((res) => {
         advanceTimer.current = window.setTimeout(res, isCorrect && !fixed ? FEEDBACK_DELAY_CORRECT : FEEDBACK_DELAY_WRONG)
       })
-      Promise.all([minDelay, speechDone]).then(() => {
-        if (needsRebuild && generation === advanceGeneration.current) {
+      let proceeded = false
+      const proceed = () => {
+        if (proceeded || generation !== advanceGeneration.current) return
+        proceeded = true
+        skipRef.current = null
+        if (needsRebuild) {
           rebuildAdvance.current = advance
           setSlots(new Array(units.length).fill(null))
           setStatus('rebuild')
           return
         }
         advance()
-      })
+      }
+      Promise.all([minDelay, speechDone]).then(proceed)
+      skipRef.current = {
+        at: performance.now(),
+        minMs: isCorrect && !fixed ? SKIP_AFTER_CORRECT_MS : SKIP_AFTER_WRONG_MS,
+        run: () => {
+          if (advanceTimer.current) window.clearTimeout(advanceTimer.current)
+          stopSpeaking()
+          proceed()
+        },
+      }
     },
     [
       score,
@@ -593,6 +742,13 @@ export default function GameScreen({
     ],
   )
 
+  const skipFeedback = () => {
+    const s = skipRef.current
+    if (!s || performance.now() - s.at < s.minMs) return
+    skipRef.current = null
+    s.run()
+  }
+
   useEffect(() => {
     if (status === 'playing' && timeLeft <= 0) {
       cancelPendingCheck()
@@ -607,6 +763,13 @@ export default function GameScreen({
    * scored, unless they quit before answering anything at all. */
   const handleQuit = () => {
     sound.click()
+    const hasProgress = answeredCount > 0 || slots.some((s) => s !== null)
+    if (hasProgress && !quitArmed) {
+      setQuitArmed(true)
+      if (quitArmTimer.current) window.clearTimeout(quitArmTimer.current)
+      quitArmTimer.current = window.setTimeout(() => setQuitArmed(false), QUIT_ARM_MS)
+      return
+    }
     if (!isEndless || answeredCount === 0) {
       onExit()
       return
@@ -635,37 +798,79 @@ export default function GameScreen({
     resolve(isCorrect)
   }
 
+  /**
+   * Every change to the answer row while playing goes through here: it
+   * records where the tiles were (for the fly animation), and scores the board
+   * once it's full — straight away in retry mode, where every placed word is
+   * already known to fit, or after the grace window in one-shot mode. Any
+   * edit made during that window cancels it, and refilling the board starts a
+   * fresh one.
+   */
+  const commitSlots = (next: (Tile | null)[]) => {
+    captureFlip()
+    cancelPendingCheck()
+    setSlots(next)
+    if (!next.every((s) => s !== null)) return
+    if (retryOnMiss) {
+      resolve(true)
+      return
+    }
+    const placedWords = next.map((s) => (s as Tile).word)
+    const isCorrect = isAccepted(placedWords, answer.orders)
+    const mistake = isCorrect ? null : detectOrderMistake(question, placedWords, answer.orders)
+    setAwaitingConfirm(true)
+    const timerId = window.setTimeout(() => {
+      pendingCheck.current = null
+      setAwaitingConfirm(false)
+      if (!isCorrect) setOrderHint(mistake)
+      resolve(isCorrect)
+    }, CONFIRM_GRACE_MS)
+    pendingCheck.current = { timerId, isCorrect, mistake }
+  }
+
   /** Laying out the correct sentence after a miss: only the right next word
    * sticks, and nothing is scored or recorded. */
-  const handleRebuildTap = (tile: Tile, emptyIndex: number) => {
+  const placeRebuild = (tile: Tile, emptyIndex: number): boolean => {
     if (tile.word !== units[emptyIndex]) {
       setErrorTileUid(tile.uid)
       sound.remove()
       window.setTimeout(() => setErrorTileUid(null), 450)
-      return
+      return false
     }
     const nextSlots = [...slots]
     nextSlots[emptyIndex] = tile
+    captureFlip()
     setSlots(nextSlots)
-    sound.place()
+    sound.place(emptyIndex)
+    haptic(8)
     if (nextSlots.every((s) => s !== null)) {
       setStatus('rebuilt')
       const done = rebuildAdvance.current
       rebuildAdvance.current = null
       advanceTimer.current = window.setTimeout(() => done?.(), REBUILD_DONE_DELAY)
+      skipRef.current = {
+        at: performance.now(),
+        minMs: 0,
+        run: () => {
+          if (advanceTimer.current) window.clearTimeout(advanceTimer.current)
+          done?.()
+        },
+      }
     }
+    return true
   }
 
-  const handleTrayTap = (tile: Tile) => {
-    if ((status !== 'playing' && status !== 'rebuild') || awaitingConfirm) return
+  /** Puts a tray tile on the board — into `target` when it was dropped on a
+   * specific slot (one-shot mode), otherwise into the first empty one.
+   * Returns whether it landed. */
+  const placeTile = (tile: Tile, target?: number): boolean => {
+    if (status !== 'playing' && status !== 'rebuild') return false
+    if (slots.some((s) => s?.uid === tile.uid)) return false
     const emptyIndex = slots.findIndex((s) => s === null)
-    if (emptyIndex === -1) return
-    if (status === 'rebuild') {
-      handleRebuildTap(tile, emptyIndex)
-      return
-    }
+    if (status === 'rebuild') return emptyIndex !== -1 && placeRebuild(tile, emptyIndex)
 
     if (retryOnMiss) {
+      if (emptyIndex === -1) return false
       // 即時判定モード: この単語を置いても、正解のどれかの並びと食い違わないか判定
       const tried = slots.map((s, i) => (i === emptyIndex ? tile.word : (s?.word ?? null)))
       if (!fitsSomeOrder(tried, answer.orders)) {
@@ -681,6 +886,7 @@ export default function GameScreen({
         // something to work the next word out from, not just to copy.
         setHintShown(true)
         sound.wrong()
+        haptic([30, 40, 30])
         // Booked before recordOutcome/recordMiss move things on: only the
         // first result on a question that came up due counts as recall.
         if (!question.relearn && !questionOutcome.current.has(question.id)) {
@@ -698,7 +904,7 @@ export default function GameScreen({
         }
         window.setTimeout(() => setErrorTileUid(null), 450)
         // A repeat costs nothing (see resolve).
-        if (question.relearn) return
+        if (question.relearn) return false
 
         setCombo(0)
         recordMiss(levelId, question.id)
@@ -710,38 +916,57 @@ export default function GameScreen({
           // attempted and missed, so it counts toward the answered total.
           finishSession(score, correctCount, bestCombo, answeredCount + 1)
         }
+        return false
+      }
+
+      // 正しい単語の場合: スロットに配置（すべて埋まれば commitSlots が正解処理）
+      const nextSlots = [...slots]
+      nextSlots[emptyIndex] = tile
+      sound.place(emptyIndex)
+      haptic(8)
+      commitSlots(nextSlots)
+      return true
+    }
+
+    // 一発勝負モード: 自由に並べてから一括判定。埋まっている欄に落とした
+    // 場合は、元の単語がトレイに戻って入れ替わる。
+    const index = target ?? emptyIndex
+    if (index === -1) return false
+    const nextSlots = [...slots]
+    nextSlots[index] = tile
+    sound.place(nextSlots.filter((s) => s !== null).length - 1)
+    haptic(8)
+    commitSlots(nextSlots)
+    return true
+  }
+
+  /** Moving a placed word to another slot counts as a correction, like
+   * pulling it out and putting it back (see isShakyAnswer). */
+  const swapSlots = (from: number, to: number) => {
+    if (status !== 'playing' || from === to) return
+    removalsThisQuestion.current++
+    const nextSlots = [...slots]
+    ;[nextSlots[from], nextSlots[to]] = [nextSlots[to], nextSlots[from]]
+    sound.swap()
+    haptic(8)
+    commitSlots(nextSlots)
+  }
+
+  const handleSlotTap = (index: number) => {
+    if (status !== 'playing') return
+    if (!slots[index]) return
+    removalsThisQuestion.current++
+    const nextSlots = [...slots]
+    nextSlots[index] = null
+    sound.remove()
+    commitSlots(nextSlots)
+  }
+
+  const undoLast = () => {
+    for (let i = slots.length - 1; i >= 0; i--) {
+      if (slots[i]) {
+        handleSlotTap(i)
         return
-      }
-
-      // 正しい単語の場合: スロットに配置
-      const nextSlots = [...slots]
-      nextSlots[emptyIndex] = tile
-      setSlots(nextSlots)
-      sound.place()
-
-      // すべての単語が正しく埋まったら正解処理
-      if (nextSlots.every((s) => s !== null)) {
-        resolve(true)
-      }
-    } else {
-      // 一発勝負モード: 自由に並べてから一括判定
-      const nextSlots = [...slots]
-      nextSlots[emptyIndex] = tile
-      setSlots(nextSlots)
-      sound.place()
-
-      if (nextSlots.every((s) => s !== null)) {
-        const placedWords = nextSlots.map((s) => (s as Tile).word)
-        const isCorrect = isAccepted(placedWords, answer.orders)
-        const mistake = isCorrect ? null : detectOrderMistake(question, placedWords, answer.orders)
-        setAwaitingConfirm(true)
-        const timerId = window.setTimeout(() => {
-          pendingCheck.current = null
-          setAwaitingConfirm(false)
-          if (!isCorrect) setOrderHint(mistake)
-          resolve(isCorrect)
-        }, CONFIRM_GRACE_MS)
-        pendingCheck.current = { timerId, isCorrect, mistake }
       }
     }
   }
@@ -749,23 +974,174 @@ export default function GameScreen({
   const handleClearAll = () => {
     if (status !== 'playing') return
     if (!slots.some((s) => s !== null)) return
-    cancelPendingCheck()
     removalsThisQuestion.current++
-    setSlots(new Array(slots.length).fill(null))
     sound.remove()
+    commitSlots(new Array(slots.length).fill(null))
   }
 
-  const handleSlotTap = (index: number) => {
-    if (status !== 'playing') return
-    const tile = slots[index]
-    if (!tile) return
-    cancelPendingCheck()
-    removalsThisQuestion.current++
-    const nextSlots = [...slots]
-    nextSlots[index] = null
-    setSlots(nextSlots)
-    sound.remove()
+  const clickAllowed = () => performance.now() >= suppressClickUntil.current
+
+  // ---------- drag & drop ----------
+
+  const beginPointer = (
+    e: ReactPointerEvent<HTMLButtonElement>,
+    uid: number,
+    from: 'tray' | 'slot',
+    slotIndex: number,
+  ) => {
+    if (e.button !== 0 || !e.isPrimary || dragRef.current) return
+    if (status !== 'playing' && !(status === 'rebuild' && from === 'tray')) return
+    // In retry mode every placed word is already confirmed right, so there's
+    // nothing to rearrange — a tap still sends it back to the tray.
+    if (from === 'slot' && retryOnMiss) return
+    dragRef.current = {
+      uid,
+      from,
+      slotIndex,
+      el: e.currentTarget,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      active: false,
+      transform: '',
+    }
   }
+
+  /** The slot a drop at this screen point is meant for. Anywhere over the
+   * answer area counts, snapped to the nearest slot, so a drop doesn't have
+   * to be pixel-perfect to land. */
+  const slotIndexAt = (x: number, y: number): number | null => {
+    const area = slotsAreaRef.current
+    if (!area) return null
+    const r = area.getBoundingClientRect()
+    const pad = 12
+    if (x < r.left - pad || x > r.right + pad || y < r.top - pad || y > r.bottom + pad) return null
+    let best: number | null = null
+    let bestDist = Infinity
+    area.querySelectorAll<HTMLElement>('[data-slot-index]').forEach((el) => {
+      const s = el.getBoundingClientRect()
+      const dist = Math.hypot(x - (s.left + s.width / 2), y - (s.top + s.height / 2))
+      if (dist < bestDist) {
+        bestDist = dist
+        best = Number(el.dataset.slotIndex)
+      }
+    })
+    return best
+  }
+
+  /** Applies a finished drag. Returns whether the board changed. Kept in a
+   * ref so the window listeners below always see this render's state. */
+  const dropRef = useRef<(d: DragState, target: number | null) => boolean>(() => false)
+  dropRef.current = (d, target) => {
+    if (d.from === 'tray') {
+      const tile = tray.find((t) => t.uid === d.uid)
+      if (!tile || target === null) return false
+      return placeTile(tile, retryOnMiss || status === 'rebuild' ? undefined : target)
+    }
+    if (status !== 'playing') return false
+    // Dragged out of the answer area: back to the tray.
+    if (target === null) {
+      handleSlotTap(d.slotIndex)
+      return true
+    }
+    if (target === d.slotIndex) return false
+    swapSlots(d.slotIndex, target)
+    return true
+  }
+  const pickupSoundRef = useRef(sound.pickup)
+  pickupSoundRef.current = sound.pickup
+  const slotIndexAtRef = useRef(slotIndexAt)
+  slotIndexAtRef.current = slotIndexAt
+
+  useEffect(() => {
+    const move = (e: PointerEvent) => {
+      const d = dragRef.current
+      if (!d || e.pointerId !== d.pointerId) return
+      const dx = e.clientX - d.startX
+      const dy = e.clientY - d.startY
+      if (!d.active) {
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
+        d.active = true
+        setDragUid(d.uid)
+        pickupSoundRef.current()
+        haptic(6)
+      }
+      const local = toCanvasDelta(dx, dy)
+      d.transform = `translate(${local.x}px, ${local.y}px) scale(1.1) rotate(-2deg)`
+      d.el.style.transform = d.transform
+      const target = slotIndexAtRef.current(e.clientX, e.clientY)
+      if (target !== hoverSlotRef.current) {
+        hoverSlotRef.current = target
+        setHoverSlot(target)
+      }
+    }
+    const end = (e: PointerEvent, cancelled: boolean) => {
+      const d = dragRef.current
+      if (!d || e.pointerId !== d.pointerId) return
+      dragRef.current = null
+      hoverSlotRef.current = null
+      setHoverSlot(null)
+      if (!d.active) return // a plain tap — the click handler takes it from here
+      suppressClickUntil.current = performance.now() + 350
+      setDragUid(null)
+      const target = cancelled ? null : slotIndexAtRef.current(e.clientX, e.clientY)
+      // The board snapshot for the fly-in is taken inside the drop, while
+      // the tile is still sitting under the finger — so it lands from there.
+      const changed = dropRef.current(d, target)
+      d.el.style.transform = ''
+      if (!changed && !prefersReducedMotion()) {
+        d.el.animate([{ transform: d.transform }, { transform: 'none' }], {
+          duration: 200,
+          easing: 'cubic-bezier(0.2, 0.8, 0.3, 1)',
+        })
+      }
+    }
+    const up = (e: PointerEvent) => end(e, false)
+    const cancel = (e: PointerEvent) => end(e, true)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
+    return () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', cancel)
+    }
+  }, [])
+
+  // ---------- keyboard ----------
+  // 1–9, 0: place the tray word with that number · Backspace: take the last
+  // word back · Esc: clear the row · Enter: confirm now / skip to next.
+  const keyRef = useRef<(e: KeyboardEvent) => void>(() => {})
+  keyRef.current = (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
+    if (status !== 'playing' && status !== 'rebuild') {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        skipFeedback()
+      }
+      return
+    }
+    if (/^[0-9]$/.test(e.key)) {
+      const tile = tray[e.key === '0' ? 9 : Number(e.key) - 1]
+      if (tile) {
+        e.preventDefault()
+        placeTile(tile)
+      }
+    } else if (e.key === 'Backspace') {
+      e.preventDefault()
+      undoLast()
+    } else if (e.key === 'Escape') {
+      handleClearAll()
+    } else if (e.key === 'Enter' && awaitingConfirm) {
+      e.preventDefault()
+      confirmNow()
+    }
+  }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keyRef.current(e)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // Only the tiles that would have to move, not everything after the first
   // slip (see misplacedSlots).
@@ -774,21 +1150,45 @@ export default function GameScreen({
   const timerPct = (timeLeft / timeLimit) * 100
   const timerClass = timeLeft <= 4 ? 'urgent' : timeLeft <= timeLimit * 0.4 ? 'warn' : ''
   const secondsLeft = Math.ceil(timeLeft)
+  const nextEmpty = slots.findIndex((s) => s === null)
+  // In retry mode (and while rebuilding) a drop anywhere goes to the next
+  // slot, so that's the one to light up, whichever slot the finger is nearest.
+  const hoverIndex = hoverSlot === null ? null : retryOnMiss || status === 'rebuild' ? nextEmpty : hoverSlot
+  const heat = Math.min(combo, 10) / 10
+  // The pauses a tap can cut short — not 'rebuild', where taps place words.
+  const skippable = status === 'correct' || status === 'wrong' || status === 'fixed' || status === 'rebuilt'
+  const placing = status === 'playing' || status === 'rebuild'
 
   return (
     <div
       className={styles.screen}
-      style={{ ['--bg1' as string]: level.gradient[1], ['--bg2' as string]: level.gradient[0] }}
+      style={{
+        ['--bg1' as string]: level.gradient[1],
+        ['--bg2' as string]: level.gradient[0],
+        ['--heat' as string]: heat,
+      }}
+      onPointerDown={(e) => {
+        if (!skippable) return
+        if ((e.target as HTMLElement).closest('button:not(:disabled)')) return
+        skipFeedback()
+      }}
     >
-      <div className={`${styles.shakeTarget} ${shake ? 'shake' : ''}`}>
+      <div className={`${styles.heatGlow} ${combo >= 5 ? styles.heatHot : ''}`} aria-hidden="true" />
+      <div ref={boardRef} className={`${styles.shakeTarget} ${shake ? 'shake' : ''}`}>
         <div className={styles.hud}>
-          {isEndless ? (
+          {isEndless || quitArmed ? (
             <button
-              className={styles.quitButton}
+              className={`${styles.quitButton} ${quitArmed ? styles.quitArmed : ''}`}
               onClick={handleQuit}
-              aria-label={answeredCount === 0 ? 'レベル選択に戻る' : 'やめて結果を見る'}
+              aria-label={
+                quitArmed
+                  ? 'もう一度押すとやめます'
+                  : answeredCount === 0
+                    ? 'レベル選択に戻る'
+                    : 'やめて結果を見る'
+              }
             >
-              ← やめる
+              {quitArmed ? 'もう一度タップでやめる' : '← やめる'}
             </button>
           ) : (
             <button className={styles.backButton} onClick={handleQuit} aria-label="レベル選択に戻る">
@@ -819,10 +1219,13 @@ export default function GameScreen({
             </div>
           )}
           <div className={`${styles.comboBadge} ${combo >= 5 ? styles.hot : ''}`} style={{ opacity: combo > 0 ? 1 : 0.35 }}>
-            <span className={styles.flame}>🔥</span> COMBO {combo}
+            <span className={styles.flame}>🔥</span> COMBO{' '}
+            <span key={combo} className={styles.comboNum}>
+              {combo}
+            </span>
           </div>
           <div className={styles.scoreWrap}>
-            {score}
+            {displayedScore}
             {scorePop && (
               <span key={scorePop.id} className={styles.scorePop}>
                 +{scorePop.value}
@@ -904,19 +1307,35 @@ export default function GameScreen({
           )}
         </div>
 
-        <div className={styles.slotsArea}>
+        <div ref={slotsAreaRef} className={styles.slotsArea}>
           <div className={styles.slotsRow} role="group" aria-label="解答欄">
             {slots.map((tile, i) => (
               <AnswerSlot
                 key={i}
+                index={i}
+                uid={tile?.uid}
                 word={tile ? tile.word : null}
                 displayWord={tile ? displayFor(tile, capitalizeFirst, question.words[1]) : undefined}
                 colorIndex={tile ? tile.uid : i}
-                position={i + 1}
                 mismatch={!!misplaced?.[i] && !!tile}
-                onClick={() => handleSlotTap(i)}
+                next={placing && dragUid === null && i === nextEmpty}
+                hover={hoverIndex === i}
+                dragging={!!tile && dragUid === tile.uid}
+                cheerDelayMs={status === 'correct' || status === 'rebuilt' ? 120 + i * 55 : undefined}
+                onClick={() => {
+                  if (clickAllowed()) handleSlotTap(i)
+                }}
+                onPointerDown={tile ? (e) => beginPointer(e, tile.uid, 'slot', i) : undefined}
               />
             ))}
+            {judge && (status === 'correct' || status === 'wrong') && (
+              <div className={styles.judgeLayer} aria-live="polite">
+                <div key={judge.id} className={`${styles.judge} ${styles[`judge_${judge.tone}`]}`}>
+                  <span className={styles.judgeLabel}>{judge.label}</span>
+                  {judge.combo >= 2 && <span className={styles.judgeCombo}>🔥 {judge.combo} COMBO</span>}
+                </div>
+              </div>
+            )}
             {answer.punct && (
               <span className={styles.endPunct} aria-hidden="true">
                 {answer.punct}
@@ -925,33 +1344,51 @@ export default function GameScreen({
           </div>
         </div>
 
-        {status === 'playing' && slots.some((s) => s !== null) && (
-          <div className={styles.actionRow}>
-            <button className={styles.clearAllButton} onClick={handleClearAll} aria-label="解答欄の単語をすべてトレイに戻す">
-              ↺ 全て戻す
-            </button>
-            {awaitingConfirm && (
-              <button className={styles.confirmButton} onClick={confirmNow} aria-label="この解答で決定する">
-                ✓ これでOK（ちがう単語はタップで直せるよ）
+        <div className={styles.actionRow}>
+          {status === 'playing' && slots.some((s) => s !== null) && (
+            <>
+              {!retryOnMiss && (
+                <button className={styles.clearAllButton} onClick={undoLast} aria-label="最後に置いた単語をトレイに戻す">
+                  ⌫ 1つ戻す
+                </button>
+              )}
+              <button className={styles.clearAllButton} onClick={handleClearAll} aria-label="解答欄の単語をすべてトレイに戻す">
+                ↺ 全て戻す
               </button>
-            )}
-          </div>
-        )}
+              {awaitingConfirm && (
+                <button className={styles.confirmButton} onClick={confirmNow} aria-label="この解答で決定する">
+                  ✓ これでOK（ちがう単語はタップで直せるよ）
+                </button>
+              )}
+            </>
+          )}
+          {skippable && (
+            <span className={styles.skipHint} aria-hidden="true">
+              タップで次へ ▶
+            </span>
+          )}
+        </div>
 
         <div className={styles.trayArea}>
           <div className={styles.trayRow} role="group" aria-label="単語カード">
-            {tray.map((tile) => {
+            {tray.map((tile, i) => {
               const placed = slots.some((s) => s?.uid === tile.uid)
               return (
                 <WordTile
                   key={tile.uid}
+                  uid={tile.uid}
                   word={tile.word}
                   displayWord={displayFor(tile, capitalizeFirst, question.words[1])}
                   colorIndex={tile.uid}
-                  onClick={() => handleTrayTap(tile)}
-                  disabled={(status !== 'playing' && status !== 'rebuild') || placed}
+                  onClick={() => {
+                    if (clickAllowed()) placeTile(tile)
+                  }}
+                  onPointerDown={(e) => beginPointer(e, tile.uid, 'tray', -1)}
+                  disabled={!placing || placed}
                   placed={placed}
                   error={errorTileUid === tile.uid}
+                  dragging={dragUid === tile.uid}
+                  hotkey={i < 10 ? String((i + 1) % 10) : undefined}
                 />
               )
             })}
@@ -962,7 +1399,7 @@ export default function GameScreen({
       {status === 'correct' && (
         <>
           <div className={`${styles.flashOverlay} ${styles.correct}`} />
-          <Confetti key={qIndex} />
+          <Confetti key={qIndex} pieceCount={judge?.confetti} />
         </>
       )}
       {status === 'wrong' && <div className={`${styles.flashOverlay} ${styles.wrong}`} />}

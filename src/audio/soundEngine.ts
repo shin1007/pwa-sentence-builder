@@ -128,8 +128,27 @@ class SoundEngine {
     this.tone({ freq: 720, type: 'sine', duration: 0.07, peak: 0.25, release: 0.05 })
   }
 
-  place() {
-    this.tone({ freq: 480, glideTo: 640, type: 'triangle', duration: 0.1, peak: 0.35 })
+  /**
+   * Placing a word climbs a pentatonic scale, one step per word already on
+   * the board, so building a sentence sounds like playing a little run up a
+   * keyboard — and the last word of a long sentence lands on the highest note.
+   */
+  place(step = 0) {
+    const scale = [523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1174.66, 1318.51, 1567.98, 1760, 2093, 2349.32]
+    const freq = scale[Math.min(Math.max(step, 0), scale.length - 1)]
+    this.tone({ freq: freq * 0.92, glideTo: freq, type: 'triangle', duration: 0.1, peak: 0.32 })
+    this.tone({ freq: freq * 2, type: 'sine', duration: 0.05, peak: 0.06, release: 0.04 })
+  }
+
+  /** A word being picked up to drag. */
+  pickup() {
+    this.tone({ freq: 880, glideTo: 990, type: 'sine', duration: 0.05, peak: 0.16, release: 0.04 })
+  }
+
+  /** Two placed words trading places. */
+  swap() {
+    this.tone({ freq: 620, glideTo: 820, type: 'triangle', duration: 0.07, peak: 0.24 })
+    this.tone({ freq: 820, glideTo: 620, start: 0.06, type: 'triangle', duration: 0.07, peak: 0.2 })
   }
 
   remove() {
@@ -140,11 +159,22 @@ class SoundEngine {
     this.tone({ freq: 300, type: 'square', duration: 0.05, peak: 0.18, release: 0.04 })
   }
 
-  correct() {
+  /**
+   * The fanfare rises a semitone per combo step (capped at a fifth, before it
+   * gets shrill), so a streak is something you can hear building. A fast
+   * answer adds a sparkle on top.
+   */
+  correct(combo = 0, sparkle = false) {
+    const shift = Math.pow(2, Math.min(Math.max(combo, 0), 7) / 12)
     const notes = [523.25, 659.25, 783.99, 1046.5] // C5 E5 G5 C6
     notes.forEach((f, i) => {
-      this.tone({ freq: f, start: i * 0.07, duration: 0.22, type: 'triangle', peak: 0.32 })
+      this.tone({ freq: f * shift, start: i * 0.07, duration: 0.22, type: 'triangle', peak: 0.32 })
     })
+    if (sparkle) {
+      ;[2093, 2637.02, 3135.96].forEach((f, i) => {
+        this.tone({ freq: f * shift, start: 0.3 + i * 0.045, duration: 0.12, type: 'sine', peak: 0.1 })
+      })
+    }
   }
 
   wrong() {

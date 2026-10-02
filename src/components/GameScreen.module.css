@@ -92,13 +92,13 @@
    than the bare ← arrow — stopping is a normal way to finish the run. */
 .quitButton {
   height: 4.6cqh;
-  min-height: 34px;
+  min-height: 40px;
   padding: 0 1.6cqh;
   border-radius: 999px;
   background: rgba(10, 28, 18, 0.85);
   border: 2px solid rgba(255, 255, 255, 0.75);
   color: #ffffff;
-  font-size: 1.7cqh;
+  font-size: clamp(0.75rem, 1.7cqh, 0.95rem);
   font-weight: 900;
   white-space: nowrap;
   display: flex;
@@ -109,6 +109,12 @@
   transition: transform 0.1s ease;
 }
 
+/* First tap on back/やめる only arms it. */
+.quitButton.quitArmed {
+  background: var(--color-danger);
+  border-color: #ffffff;
+}
+
 .quitButton:active {
   transform: scale(0.94);
 }
@@ -116,8 +122,8 @@
 .backButton {
   width: 4.6cqh;
   height: 4.6cqh;
-  min-width: 34px;
-  min-height: 34px;
+  min-width: 40px;
+  min-height: 40px;
   border-radius: 50%;
   background: rgba(10, 28, 18, 0.85);
   border: 2px solid rgba(255, 255, 255, 0.75);
@@ -159,9 +165,34 @@
   font-size: clamp(0.85rem, 2.2cqh, 1.15rem);
 }
 
+@keyframes heart-break {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+    filter: none;
+  }
+  35% {
+    transform: scale(1.7) rotate(-12deg);
+    opacity: 1;
+    filter: none;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0.25;
+    filter: grayscale(1);
+  }
+}
+
+.hearts > span {
+  display: inline-block;
+}
+
+/* The heart that was just lost swells and drains, so a miss is noticed
+ * without having to count the row. */
 .heartLost {
   opacity: 0.25;
   filter: grayscale(1);
+  animation: heart-break 0.55s ease-out;
 }
 
 .comboBadge {
@@ -186,6 +217,21 @@
 .flame {
   animation: flame-flicker 0.6s ease-in-out infinite;
   display: inline-block;
+}
+
+@keyframes combo-bump {
+  0% {
+    transform: scale(1.9);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.comboNum {
+  display: inline-block;
+  min-width: 1.2ch;
+  animation: combo-bump 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .scoreWrap {
@@ -366,6 +412,7 @@
 }
 
 .slotsRow {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   gap: 1.2cqh;
@@ -377,14 +424,20 @@
 
 .actionRow {
   flex: 0 0 auto;
+  /* Holds its height even when empty, so the tray doesn't drop away from
+   * under the player's finger the moment the first word is placed. */
+  min-height: calc(36px + 1.4cqh);
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 1cqh;
-  padding: 0 3cqh 0.6cqh;
+  /* Spaced apart from each other and from the tray just below, so reaching
+   * for a word can't brush 全て戻す by accident. */
+  gap: max(1.6cqh, 10px);
+  padding: 0 3cqh max(1.2cqh, 6px);
 }
 
 .confirmButton {
+  min-height: 36px;
   padding: 0.7cqh 2.4cqh;
   border-radius: 999px;
   border: 2px solid #ffffff;
@@ -397,6 +450,7 @@
 }
 
 .clearAllButton {
+  min-height: 36px;
   padding: 0.7cqh 2cqh;
   border-radius: 999px;
   border: 2px solid rgba(255, 255, 255, 0.75);
@@ -428,6 +482,121 @@
 }
 
 /* ---------- feedback overlay ---------- */
+
+@keyframes hint-blink {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.skipHint {
+  font-size: clamp(0.65rem, 1.6cqh, 0.85rem);
+  font-weight: 800;
+  opacity: 0.8;
+  animation: hint-blink 1.2s ease-in-out 0.4s infinite both;
+}
+
+/* Combo heat: the screen's edges warm up as a streak builds. */
+.heatGlow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: var(--heat, 0);
+  box-shadow: inset 0 0 6cqh rgba(255, 138, 61, 0.55);
+  transition: opacity 0.5s ease, box-shadow 0.5s ease;
+}
+
+.heatGlow.heatHot {
+  box-shadow: inset 0 0 8cqh rgba(255, 95, 158, 0.6);
+}
+
+@keyframes judge-pop {
+  0% {
+    transform: scale(0.3) rotate(-8deg);
+    opacity: 0;
+  }
+  18% {
+    transform: scale(1.18) rotate(2deg);
+    opacity: 1;
+  }
+  30% {
+    transform: scale(1) rotate(0deg);
+  }
+  75% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-3cqh) scale(0.96);
+    opacity: 0;
+  }
+}
+
+/* Sits just above the answer row (inside it, so it follows the row when a
+ * long sentence wraps), clear of the 正解/hint chips over the prompt. */
+.judgeLayer {
+  position: absolute;
+  left: -50cqw;
+  right: -50cqw;
+  bottom: calc(100% + 0.6cqh);
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 8;
+}
+
+.judge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4cqh;
+  animation: judge-pop 1.1s ease-out forwards;
+}
+
+.judgeLabel {
+  font-size: clamp(2rem, 9cqh, 4.2rem);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  -webkit-text-stroke: 0.08em #081a10;
+  paint-order: stroke fill;
+  text-shadow: 0 0.08em 0 rgba(0, 0, 0, 0.35);
+}
+
+.judgeCombo {
+  font-size: clamp(0.9rem, 3cqh, 1.4rem);
+  font-weight: 900;
+  color: var(--color-accent-orange);
+  -webkit-text-stroke: 0.1em #081a10;
+  paint-order: stroke fill;
+}
+
+.judge_perfect .judgeLabel {
+  background: linear-gradient(180deg, #fff6b0 0%, #ffd23f 45%, #ff8a3d 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 1.5cqh rgba(255, 210, 63, 0.7));
+}
+
+.judge_great .judgeLabel {
+  color: var(--color-accent-teal);
+}
+
+.judge_good .judgeLabel {
+  color: #ffffff;
+}
+
+.judge_miss .judgeLabel {
+  color: #ff8fa3;
+  font-size: clamp(1.6rem, 7cqh, 3.2rem);
+}
 
 .flashOverlay {
   position: absolute;
@@ -464,6 +633,8 @@
 }
 
 .shakeTarget {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 100%;
   display: flex;
@@ -489,6 +660,17 @@
 
   .confirmButton {
     animation: none;
+  }
+
+  .heartLost,
+  .comboNum,
+  .skipHint {
+    animation: none;
+  }
+
+  .judge {
+    animation: none;
+    opacity: 1;
   }
 }
 

@@ -10,7 +10,9 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt' so a new version waits for a safe moment to reload instead
+      // of interrupting a run (see src/utils/updateGate.ts).
+      registerType: 'prompt',
       includeAssets: ['favicon-32.png', 'favicon-48.png', 'apple-touch-icon.png'],
       manifest: {
         id: '/',

@@ -127,7 +127,7 @@
 
 - **強制横画面のフォールバック**: `src/hooks/useForcedLandscape.ts` はCSS回転＋Screen Orientation API併用（良い設計）。iOS Safariは`orientation.lock`非対応、アプリ内ブラウザ（LINE/Instagram等）での見え方も確認。
 - ✅ (#4, #5) **バックグラウンド時のタイマー**: `visibilitychange` を監視し、タブ非表示中はカウントダウン（インターバル）と正解後の自動遷移（`setTimeout`）の両方を一時停止するようにした。
-- **PWA更新戦略**: `registerType: 'autoUpdate'`。新コンテンツ配信時にプレイ中ユーザーへ更新を促す導線があるか。
+- ✅ **PWA更新戦略**: 旧設定の `registerType: 'autoUpdate'` は新しい Service Worker を即座に有効化するだけで、開いているページは古いJSのまま動き続けた。全画面PWAは何日もバックグラウンドに置かれてナビゲーションが起きないため、ブラウザ側の更新チェック自体もほとんど走らず、新しい問題や修正がなかなか届かなかった。`registerType: 'prompt'` に変え、新版のダウンロード後は `src/utils/updateGate.ts` が「失うものがない時」まで再読み込みを待たせる: タイトル画面ならその場で、レベル選択・成長記録ならアプリがバックグラウンドに回った瞬間（見ていない間に読み込み直し、戻るとタイトル）。プレイ中と結果画面では適用しない（スコア・ライフ・未読の結果を失わないように）。また前面に戻るたびに最大1時間に1回 `registration.update()` で更新を確認する（`src/pwa/registerUpdates.ts`）。Playwrightで「レベル選択中に新版が届いても再読み込みされない → タイトルに戻ると新版に切り替わる」を確認済み。既存ユーザーは旧版のページに更新処理が無いので、この版だけは次回のアプリ起動時に切り替わる。
 - **オフライン完結**: 効果音はWeb Audio合成でオフライン完結。ただしTTSはOS内蔵音声依存のため厳密には非オフライン。
 - ✅ (#15) **セーフエリア対応**: `src/styles/global.css` の `.app-canvas` に、向き別に物理→視覚エッジを変換する `--safe-top/right/bottom/left` カスタムプロパティを追加。`is-landscape` は1:1、`is-portrait`（CSS回転中）は `rotate(90deg)` の回転方向を数式で導出し、物理top→視覚left、物理right→視覚top、物理bottom→視覚right、物理left→視覚bottomの対応で `env(safe-area-inset-*)` を割り当てた。各画面の `.screen` に `padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left)` を適用（ノッチなし端末では全て0pxなので既存レイアウトに影響なし）。iPhone実機で確認済み — 方向は正しかった。
 
@@ -161,9 +161,8 @@
 1. 文法検証の強化（三単現のs・冠詞・時制の一致のような意味的な正しさのチェック）
 2. ドラッグ&ドロップと新しい演出の実機確認（特にiOS Safari・低スペックAndroidでのFLIPアニメーションの滑らかさ、子どもがドラッグとタップを迷わないか）
 3. リプレイ性の再強化（ランキング・SNS共有など。実績とデイリーチャレンジは削除済みなので、戻すなら成長記録への統合を前提に）
-4. PWA更新戦略（`registerType: 'autoUpdate'`。プレイ中の更新をどう扱うか）
-5. (#32) で入れた `secPerWord` / `MAX_WORDS_PER_QUESTION` の実プレイテストでの再調整。数値はバンクの実測（語数分布）から決めたもので、対象年齢での検証はまだ
-6. 難易度カーブ（レベル内の出題順が完全ランダムで、難しい構文が1問目に来ることがある）
-7. 「復習で思い出せた割合」がたまったら `REVIEW_STEP_DAYS` を見直す
-8. 句のまとまり（`PHRASE_CHUNK_BELOW`）と語順ヒントの判定条件を、実際のプレイで出方を見て調整する
-9. 最近解いた文を後回しにする期間（`SOLVED_REST_DAYS`）と重み（`RECENTLY_SOLVED_WEIGHT`）を、「復習で思い出せた割合」と合わせて見直す
+4. (#32) で入れた `secPerWord` / `MAX_WORDS_PER_QUESTION` の実プレイテストでの再調整。数値はバンクの実測（語数分布）から決めたもので、対象年齢での検証はまだ
+5. 難易度カーブ（レベル内の出題順が完全ランダムで、難しい構文が1問目に来ることがある）
+6. 「復習で思い出せた割合」がたまったら `REVIEW_STEP_DAYS` を見直す
+7. 句のまとまり（`PHRASE_CHUNK_BELOW`）と語順ヒントの判定条件を、実際のプレイで出方を見て調整する
+8. 最近解いた文を後回しにする期間（`SOLVED_REST_DAYS`）と重み（`RECENTLY_SOLVED_WEIGHT`）を、「復習で思い出せた割合」と合わせて見直す

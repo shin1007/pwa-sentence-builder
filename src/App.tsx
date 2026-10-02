@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useForcedLandscape } from './hooks/useForcedLandscape'
 import { SoundProvider } from './context/SoundContext'
 import { useSoundContext } from './context/sound'
@@ -9,6 +9,7 @@ import GameScreen from './components/GameScreen'
 import ResultScreen from './components/ResultScreen'
 import ProgressScreen from './components/ProgressScreen'
 import { dueReviewCount } from './utils/reviewQueue'
+import { reportScreenForUpdates } from './pwa/registerUpdates'
 import type { FocusSession, GameMode, LevelId, LevelResult, LevelSelectMode, MissedQuestion } from './types'
 import './styles/global.css'
 
@@ -22,6 +23,10 @@ type Screen =
 function Shell() {
   const [screen, setScreen] = useState<Screen>({ name: 'title' })
   const sound = useSoundContext()
+
+  useEffect(() => {
+    reportScreenForUpdates(screen.name)
+  }, [screen.name])
 
   const goTitle = useCallback(() => setScreen({ name: 'title' }), [])
   const goLevelSelect = useCallback(

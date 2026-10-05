@@ -60,6 +60,8 @@ export default defineConfig({
         // audio) should be fetched and cached lazily per question via the
         // runtimeCaching rule below, not eagerly downloaded on first install.
         globPatterns: ['**/*.{js,css,html,png,svg,ico,woff2}'],
+        // ogp.png is only fetched by SNS crawlers; keep it out of every user's first install.
+        globIgnores: ['ogp.png'],
         runtimeCaching: [
           {
             urlPattern: /\.(?:mp3|ogg|wav|m4a)$/,

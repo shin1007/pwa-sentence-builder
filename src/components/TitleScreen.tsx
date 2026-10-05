@@ -66,7 +66,7 @@ export default function TitleScreen({
         <div className={styles.tile}>語</div>
       </div>
 
-      <h1 className={styles.title}>英単語ならべ</h1>
+      <h1 className={styles.title}>英文パズル</h1>
       <p className={styles.subtitle}>並べかえて 英文を 作ろう！</p>
 
       <div className={styles.modeRow}>

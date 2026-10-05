@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- SNS のリンクカード用画像（public/ogp.png, 1200×630）の元。render.cjs で PNG にする。アイコン（scripts/icon-gen）と同じ配色 -->
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@800&display=swap">
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 36px;
+    font-family: "M PLUS Rounded 1c", "Hiragino Maru Gothic ProN", "Yu Gothic", sans-serif; font-weight: 800; color: #fff;
+    background: radial-gradient(circle at 24% 14%, #6f5bff 0%, #4b32e0 42%, #2c1c9c 100%);
+  }
+  .glow {
+    position: absolute; width: 900px; height: 900px; top: -300px; left: -200px;
+    background: radial-gradient(circle, rgba(255, 255, 255, .16) 0%, rgba(255, 255, 255, 0) 60%);
+  }
+  .tiles { position: relative; display: flex; gap: 28px; align-items: flex-end; }
+  .tile {
+    height: 150px; padding: 0 44px; border-radius: 36px; display: flex; align-items: center; justify-content: center;
+    font-size: 84px; line-height: 1; color: #2c1c9c; box-shadow: 0 12px 0 rgba(0, 0, 0, .18), 0 24px 40px rgba(0, 0, 0, .28);
+  }
+  .tile.a { background: #ffd23f; transform: rotate(-6deg) translateY(8px); }
+  .tile.b { background: #fff; transform: translateY(-16px); }
+  .tile.c { background: #5be0c0; transform: rotate(6deg) translateY(8px); }
+  .title { position: relative; font-size: 128px; line-height: 1; letter-spacing: .02em; text-shadow: 0 6px 0 rgba(0, 0, 0, .2), 0 14px 32px rgba(0, 0, 0, .35); }
+  .tagline { position: relative; font-size: 40px; letter-spacing: .08em; opacity: .88; }
+</style>
+</head>
+<body>
+  <div class="glow"></div>
+  <div class="tiles">
+    <div class="tile a">I</div>
+    <div class="tile b">like</div>
+    <div class="tile c">music</div>
+  </div>
+  <div class="title">英文パズル</div>
+  <div class="tagline">並べかえて 英文を 作ろう！</div>
+</body>
+</html>

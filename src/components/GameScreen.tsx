@@ -1,37 +1,43 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { getLevel } from '../data/levels'
-import { pickGrammarQuestions, pickQuestions, pickReviewQuestions, questionsByIds, warmUpFirst } from '../data/questions'
 import { useSoundContext } from '../context/sound'
 import { useSettingsContext } from '../context/settings'
 import { saveBestResultIfBetter } from '../utils/storage'
-import { isShakyAnswer, loadDueIds, recordCorrect, recordMiss, recordReviewRecall, recordShaky } from '../utils/reviewQueue'
+import { isShakyAnswer, recordCorrect, recordMiss, recordReviewRecall, recordShaky } from '../utils/reviewQueue'
 import { MAX_RELEARN_PER_RUN, countScored, insertRelearn, type Relearnable } from '../utils/relearn'
 import { recordFirstTry, recordRecovered, recordMissedOnly } from '../utils/progressStats'
-import { grammarWeights, recordGrammarResult } from '../utils/grammarStats'
-import { idiomSpans, recordIdiomResult, shouldChunkIdiom } from '../utils/idiomProgress'
-import { forgetSolved, recentlySolvedIds, recordSolved } from '../utils/solvedQuestions'
-import { phraseChunks, unitsWithSpans } from '../utils/phraseScaffold'
-import { acceptedOrders, fitsSomeOrder, isAccepted, misplacedSlots, splitFinalPunct } from '../utils/answerCheck'
+import { recordGrammarResult } from '../utils/grammarStats'
+import { recordIdiomResult } from '../utils/idiomProgress'
+import { forgetSolved, recordSolved } from '../utils/solvedQuestions'
+import { fitsSomeOrder, isAccepted, misplacedSlots } from '../utils/answerCheck'
 import { isSpeechSupported, speakEnglish, speakJapanese, stopSpeaking } from '../audio/speech'
 import { haptic } from '../utils/haptics'
-import { prefersReducedMotion, toCanvasDelta } from '../utils/motion'
 import { useCountUp } from '../hooks/useCountUp'
-import { grammarLabel } from '../data/grammar'
-import { keepsCapital } from '../data/capitalization'
+import { useFlip } from '../hooks/useFlip'
+import { useTileDrag, type TileDrop } from '../hooks/useTileDrag'
 import { ORDER_HINTS, detectOrderMistake, type OrderMistake } from '../data/orderHints'
 import { WordTile, AnswerSlot } from './WordTile'
 import Confetti from './Confetti'
-import { QUESTIONS_PER_SESSION, calcStars, timeBonus } from '../utils/scoring'
+import { calcStars, scoreCorrect, type JudgeTone } from '../utils/scoring'
 import { timeLimitFor } from '../data/timeLimit'
 import { focusLabel } from '../data/modes'
+import {
+  ENDLESS_BATCH,
+  answerFor,
+  buildTiles,
+  displayFor,
+  drawQuestions,
+  hintFor,
+  initialQuestions,
+  noteFor,
+  type Answer,
+  type Tile,
+} from './gameBoard'
 import type { FocusSession, GameMode, LevelId, LevelResult, MissedQuestion, Question } from '../types'
 import styles from './GameScreen.module.css'
 
 const START_LIVES = 10
-/** How many questions an endless run draws at a time. Another batch is
- * appended before the current one runs out, so the run never hits an end. */
-const ENDLESS_BATCH = 30
 /** Append the next batch once this few questions are left in the queue. */
 const ENDLESS_REFILL_AT = 5
 const FEEDBACK_DELAY_CORRECT = 1100
@@ -51,125 +57,15 @@ const SKIP_AFTER_WRONG_MS = 700
 const CONFIRM_GRACE_MS = 650
 /** Pause on the finished sentence after rebuilding a missed answer. */
 const REBUILD_DONE_DELAY = 700
-/** How far a press has to travel before it becomes a drag instead of a tap. */
-const DRAG_THRESHOLD_PX = 8
 /** How long the back/やめる button stays armed after the first tap. */
 const QUIT_ARM_MS = 2500
-
-interface Tile {
-  uid: number
-  word: string
-}
-
-interface DragState {
-  uid: number
-  from: 'tray' | 'slot'
-  slotIndex: number
-  el: HTMLElement
-  pointerId: number
-  startX: number
-  startY: number
-  active: boolean
-  transform: string
-}
 
 interface Judge {
   id: number
   label: string
-  tone: 'perfect' | 'great' | 'good' | 'miss'
+  tone: JudgeTone
   combo: number
   confetti: number
-}
-
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr]
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[a[i], a[j]] = [a[j], a[i]]
-  }
-  return a
-}
-
-interface Answer {
-  /** The tiles in written order: normally a word each, but a chunked idiom
-   * (see utils/idiomProgress.ts) or, while the player is struggling with the
-   * grammar, a noun phrase (see utils/phraseScaffold.ts) is a single tile.
-   * The sentence-final mark is not on any tile — it's shown after the slots
-   * (see utils/answerCheck.ts). */
-  units: string[]
-  /** The sentence-final `.`, `?` or `!`. */
-  punct: string
-  /** Every tile order that counts as correct; the first is `units`. */
-  orders: string[][]
-  /** Noun phrases are merged into single tiles for this question. */
-  phrasesChunked: boolean
-}
-
-function answerFor(levelId: LevelId, question: Question): Answer {
-  const phrases = phraseChunks(levelId, question)
-  const withPunct = unitsWithSpans(question.words, [...idiomSpans(question, shouldChunkIdiom(question)), ...phrases])
-  const { units, punct } = splitFinalPunct(withPunct)
-  return { units, punct, orders: acceptedOrders(question.words, withPunct), phrasesChunked: phrases.length > 0 }
-}
-
-function buildTiles(units: string[]): Tile[] {
-  return shuffle(units.map((word, uid) => ({ uid, word })))
-}
-
-/** What the hint names: the idiom itself for an idiom question (its words
- * may be spread over several tiles), otherwise the grammar point. */
-function hintFor(question: Question): string | undefined {
-  if (question.idiom) return `${question.idiom.phrase}（${question.idiom.meaning}）`
-  return question.grammar ? grammarLabel(question.grammar) : question.note
-}
-
-/** The note shown after answering; an idiom question also spells out the
- * idiom, since the group label alone ("群動詞") doesn't say which one. */
-function noteFor(question: Question): string | undefined {
-  if (question.idiom) return `${question.note}: ${question.idiom.phrase}（${question.idiom.meaning}）`
-  return question.note
-}
-
-/** A normal draw: biased toward what's due for review, toward the grammar
- * the player is weakest on, and away from sentences they've recently solved
- * cleanly (see pickQuestions). */
-function drawQuestions(levelId: LevelId, count: number): Question[] {
-  return pickQuestions(levelId, count, loadDueIds(levelId), grammarWeights(levelId), recentlySolvedIds(levelId))
-}
-
-function focusQuestions(levelId: LevelId, focus: FocusSession): Question[] {
-  switch (focus.kind) {
-    case 'grammar':
-      return pickGrammarQuestions(levelId, focus.grammar, QUESTIONS_PER_SESSION, recentlySolvedIds(levelId))
-    case 'review':
-      return pickReviewQuestions(levelId, loadDueIds(levelId), QUESTIONS_PER_SESSION, recentlySolvedIds(levelId))
-    case 'retryMissed':
-      return questionsByIds(levelId, focus.questionIds)
-  }
-}
-
-/** The opening draw for a run: a focus run's hand-picked set, or a normal
- * draw, opening with its shortest sentence (see warmUpFirst). A grammar
- * drill keeps its own order, which leads with the drilled point. */
-function initialQuestions(levelId: LevelId, mode: GameMode, focus: FocusSession | undefined): Question[] {
-  if (focus) {
-    const picked = focusQuestions(levelId, focus)
-    // Callers only offer a focus run that has questions, but a stale id list
-    // (the bank changed between runs) mustn't leave the run with nothing.
-    if (picked.length > 0) return focus.kind === 'grammar' ? picked : warmUpFirst(picked)
-  }
-  return warmUpFirst(drawQuestions(levelId, mode === 'endless' ? ENDLESS_BATCH : QUESTIONS_PER_SESSION))
-}
-
-/** With the first-word capital hint off, the sentence-initial tile loses
- * its capital — unless the word is always capitalized (`I'm`, `Tom`,
- * `Kyoto`; see keepsCapital). `secondWord` tells the modal `May` from the
- * month. */
-function displayFor(tile: Tile, capitalizeFirst: boolean, secondWord: string | undefined): string {
-  if (capitalizeFirst || tile.uid !== 0) return tile.word
-  const [first, ...rest] = tile.word.split(' ')
-  if (keepsCapital(first, rest[0] ?? secondWord)) return tile.word
-  return tile.word.charAt(0).toLowerCase() + tile.word.slice(1)
 }
 
 export default function GameScreen({
@@ -255,8 +151,6 @@ export default function GameScreen({
   const [orderHint, setOrderHint] = useState<OrderMistake | null>(null)
   /** The PERFECT!/GREAT!/TIME UP! callout for the question just scored. */
   const [judge, setJudge] = useState<Judge | null>(null)
-  const [dragUid, setDragUid] = useState<number | null>(null)
-  const [hoverSlot, setHoverSlot] = useState<number | null>(null)
   /** First tap on back/やめる arms it; only a second tap actually leaves, so a
    * stray thumb near the corner can't throw a run away. */
   const [quitArmed, setQuitArmed] = useState(false)
@@ -308,13 +202,6 @@ export default function GameScreen({
   const quitArmTimer = useRef<number | null>(null)
   const boardRef = useRef<HTMLDivElement>(null)
   const slotsAreaRef = useRef<HTMLDivElement>(null)
-  /** Tile positions just before the board changes, for the FLIP fly-in. */
-  const flipSnapshot = useRef<Map<number, DOMRect> | null>(null)
-  const dragRef = useRef<DragState | null>(null)
-  const hoverSlotRef = useRef<number | null>(null)
-  /** A drag ends with a pointerup that some browsers follow with a click on
-   * whatever is underneath; that click must not count as a tap. */
-  const suppressClickUntil = useRef(0)
 
   // Freeze the countdown while the tab/app is backgrounded so returning
   // players don't find their time silently drained (or the round already
@@ -429,45 +316,8 @@ export default function GameScreen({
     [],
   )
 
-  // FLIP: whenever the board changes, every tile that moved (tray → slot,
-  // slot → tray, slot ↔ slot) flies from where it was to where it now is,
-  // instead of blinking out of one place and into another.
-  useLayoutEffect(() => {
-    const snap = flipSnapshot.current
-    flipSnapshot.current = null
-    const root = boardRef.current
-    if (!snap || !root || prefersReducedMotion()) return
-    root.querySelectorAll<HTMLElement>('[data-tile-uid]').forEach((el) => {
-      if (el.dataset.hidden) return
-      const before = snap.get(Number(el.dataset.tileUid))
-      if (!before) return
-      const after = el.getBoundingClientRect()
-      const dx = before.left + before.width / 2 - (after.left + after.width / 2)
-      const dy = before.top + before.height / 2 - (after.top + after.height / 2)
-      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return
-      const d = toCanvasDelta(dx, dy)
-      const dist = Math.hypot(dx, dy)
-      el.animate(
-        [
-          { transform: `translate(${d.x}px, ${d.y}px) scale(1.06)`, opacity: 1 },
-          { transform: 'translate(0, 0) scale(1.07, 0.93)', opacity: 1, offset: 0.78 },
-          { transform: 'none', opacity: 1 },
-        ],
-        { duration: Math.min(320, 170 + dist * 0.25), easing: 'cubic-bezier(0.2, 0.8, 0.3, 1)' },
-      )
-    })
-  }, [slots])
-
-  const captureFlip = () => {
-    const root = boardRef.current
-    if (!root) return
-    const rects = new Map<number, DOMRect>()
-    root.querySelectorAll<HTMLElement>('[data-tile-uid]').forEach((el) => {
-      if (el.dataset.hidden) return
-      rects.set(Number(el.dataset.tileUid), el.getBoundingClientRect())
-    })
-    flipSnapshot.current = rects
-  }
+  // Tiles that moved fly from where they were (see useFlip).
+  const captureFlip = useFlip(boardRef, slots)
 
   /**
    * Books a question's first result this run against its grammar point, then
@@ -567,10 +417,13 @@ export default function GameScreen({
         recordRecovered()
         recordOutcome(question, true)
       } else if (isCorrect) {
-        const tier = combo >= 5 ? 2 : combo >= 3 ? 1 : 0
-        const multiplier = tier === 2 ? 2 : tier === 1 ? 1.5 : 1
-        const bonus = practiceMode ? 0 : timeBonus(timeLeft, timeLimit)
-        const gained = Math.round(100 * multiplier) + bonus
+        const { gained, label, tone } = scoreCorrect({
+          combo,
+          timeLeft,
+          timeLimit,
+          timed: !practiceMode,
+          shaky: wasShaky,
+        })
 
         nextScore = score + gained
         nextCombo = combo + 1
@@ -581,18 +434,6 @@ export default function GameScreen({
         setCombo(nextCombo)
         setBestCombo(nextBestCombo)
         setCorrectCount(nextCorrect)
-        // How it went, called out big: speed sets the grade, and a hesitant
-        // answer (see isShakyAnswer) can't be a PERFECT.
-        const speed = timeLimit > 0 ? timeLeft / timeLimit : 0
-        const [label, tone]: [string, Judge['tone']] = practiceMode
-          ? ['NICE!', 'great']
-          : wasShaky
-            ? ['GOOD!', 'good']
-            : speed >= 0.6
-              ? ['PERFECT!', 'perfect']
-              : speed >= 0.35
-                ? ['GREAT!', 'great']
-                : ['GOOD!', 'good']
         setJudge({
           id: popIdRef.current,
           label,
@@ -980,60 +821,10 @@ export default function GameScreen({
     commitSlots(new Array(slots.length).fill(null))
   }
 
-  const clickAllowed = () => performance.now() >= suppressClickUntil.current
-
   // ---------- drag & drop ----------
 
-  const beginPointer = (
-    e: ReactPointerEvent<HTMLButtonElement>,
-    uid: number,
-    from: 'tray' | 'slot',
-    slotIndex: number,
-  ) => {
-    if (e.button !== 0 || !e.isPrimary || dragRef.current) return
-    if (status !== 'playing' && !(status === 'rebuild' && from === 'tray')) return
-    // In retry mode every placed word is already confirmed right, so there's
-    // nothing to rearrange — a tap still sends it back to the tray.
-    if (from === 'slot' && retryOnMiss) return
-    dragRef.current = {
-      uid,
-      from,
-      slotIndex,
-      el: e.currentTarget,
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      active: false,
-      transform: '',
-    }
-  }
-
-  /** The slot a drop at this screen point is meant for. Anywhere over the
-   * answer area counts, snapped to the nearest slot, so a drop doesn't have
-   * to be pixel-perfect to land. */
-  const slotIndexAt = (x: number, y: number): number | null => {
-    const area = slotsAreaRef.current
-    if (!area) return null
-    const r = area.getBoundingClientRect()
-    const pad = 12
-    if (x < r.left - pad || x > r.right + pad || y < r.top - pad || y > r.bottom + pad) return null
-    let best: number | null = null
-    let bestDist = Infinity
-    area.querySelectorAll<HTMLElement>('[data-slot-index]').forEach((el) => {
-      const s = el.getBoundingClientRect()
-      const dist = Math.hypot(x - (s.left + s.width / 2), y - (s.top + s.height / 2))
-      if (dist < bestDist) {
-        bestDist = dist
-        best = Number(el.dataset.slotIndex)
-      }
-    })
-    return best
-  }
-
-  /** Applies a finished drag. Returns whether the board changed. Kept in a
-   * ref so the window listeners below always see this render's state. */
-  const dropRef = useRef<(d: DragState, target: number | null) => boolean>(() => false)
-  dropRef.current = (d, target) => {
+  /** Applies a finished drag (see useTileDrag). Returns whether the board changed. */
+  const handleDrop = (d: TileDrop, target: number | null): boolean => {
     if (d.from === 'tray') {
       const tile = tray.find((t) => t.uid === d.uid)
       if (!tile || target === null) return false
@@ -1049,65 +840,24 @@ export default function GameScreen({
     swapSlots(d.slotIndex, target)
     return true
   }
-  const pickupSoundRef = useRef(sound.pickup)
-  pickupSoundRef.current = sound.pickup
-  const slotIndexAtRef = useRef(slotIndexAt)
-  slotIndexAtRef.current = slotIndexAt
+  const { dragUid, hoverSlot, begin: beginDrag, clickAllowed } = useTileDrag({
+    slotsAreaRef,
+    onDrop: handleDrop,
+    onPickup: sound.pickup,
+  })
 
-  useEffect(() => {
-    const move = (e: PointerEvent) => {
-      const d = dragRef.current
-      if (!d || e.pointerId !== d.pointerId) return
-      const dx = e.clientX - d.startX
-      const dy = e.clientY - d.startY
-      if (!d.active) {
-        if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
-        d.active = true
-        setDragUid(d.uid)
-        pickupSoundRef.current()
-        haptic(6)
-      }
-      const local = toCanvasDelta(dx, dy)
-      d.transform = `translate(${local.x}px, ${local.y}px) scale(1.1) rotate(-2deg)`
-      d.el.style.transform = d.transform
-      const target = slotIndexAtRef.current(e.clientX, e.clientY)
-      if (target !== hoverSlotRef.current) {
-        hoverSlotRef.current = target
-        setHoverSlot(target)
-      }
-    }
-    const end = (e: PointerEvent, cancelled: boolean) => {
-      const d = dragRef.current
-      if (!d || e.pointerId !== d.pointerId) return
-      dragRef.current = null
-      hoverSlotRef.current = null
-      setHoverSlot(null)
-      if (!d.active) return // a plain tap — the click handler takes it from here
-      suppressClickUntil.current = performance.now() + 350
-      setDragUid(null)
-      const target = cancelled ? null : slotIndexAtRef.current(e.clientX, e.clientY)
-      // The board snapshot for the fly-in is taken inside the drop, while
-      // the tile is still sitting under the finger — so it lands from there.
-      const changed = dropRef.current(d, target)
-      d.el.style.transform = ''
-      if (!changed && !prefersReducedMotion()) {
-        d.el.animate([{ transform: d.transform }, { transform: 'none' }], {
-          duration: 200,
-          easing: 'cubic-bezier(0.2, 0.8, 0.3, 1)',
-        })
-      }
-    }
-    const up = (e: PointerEvent) => end(e, false)
-    const cancel = (e: PointerEvent) => end(e, true)
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-    window.addEventListener('pointercancel', cancel)
-    return () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-      window.removeEventListener('pointercancel', cancel)
-    }
-  }, [])
+  const beginPointer = (
+    e: ReactPointerEvent<HTMLButtonElement>,
+    uid: number,
+    from: 'tray' | 'slot',
+    slotIndex: number,
+  ) => {
+    if (status !== 'playing' && !(status === 'rebuild' && from === 'tray')) return
+    // In retry mode every placed word is already confirmed right, so there's
+    // nothing to rearrange — a tap still sends it back to the tray.
+    if (from === 'slot' && retryOnMiss) return
+    beginDrag(e, uid, from, slotIndex)
+  }
 
   // ---------- keyboard ----------
   // 1–9, 0: place the tray word with that number · Backspace: take the last

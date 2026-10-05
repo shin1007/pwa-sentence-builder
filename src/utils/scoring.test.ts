@@ -6,6 +6,7 @@ import {
   normalizedScore,
   timeBonus,
   MAX_TIME_BONUS,
+  scoreCorrect,
 } from './scoring'
 
 describe('calcStars', () => {
@@ -109,5 +110,29 @@ describe('timeBonus', () => {
   it('returns 0 rather than dividing by zero', () => {
     expect(timeBonus(10, 0)).toBe(0)
     expect(timeBonus(10, -1)).toBe(0)
+  })
+})
+
+describe('scoreCorrect', () => {
+  const base = { combo: 0, timeLeft: 10, timeLimit: 10, timed: true, shaky: false }
+
+  it('pays 100 plus the speed bonus, scaled up by the combo streak', () => {
+    expect(scoreCorrect(base).gained).toBe(100 + MAX_TIME_BONUS)
+    expect(scoreCorrect({ ...base, combo: 3 }).gained).toBe(150 + MAX_TIME_BONUS)
+    expect(scoreCorrect({ ...base, combo: 5 }).gained).toBe(200 + MAX_TIME_BONUS)
+  })
+
+  it('grades by the share of time left', () => {
+    expect(scoreCorrect({ ...base, timeLeft: 6 }).label).toBe('PERFECT!')
+    expect(scoreCorrect({ ...base, timeLeft: 4 }).label).toBe('GREAT!')
+    expect(scoreCorrect({ ...base, timeLeft: 3 }).label).toBe('GOOD!')
+  })
+
+  it('never calls a hesitant answer PERFECT', () => {
+    expect(scoreCorrect({ ...base, shaky: true })).toMatchObject({ label: 'GOOD!', tone: 'good' })
+  })
+
+  it('gives no speed bonus or grade without a clock', () => {
+    expect(scoreCorrect({ ...base, timed: false })).toEqual({ gained: 100, label: 'NICE!', tone: 'great' })
   })
 })

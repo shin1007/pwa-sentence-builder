@@ -3,6 +3,7 @@ import { requestFullscreenLandscape } from '../hooks/useForcedLandscape'
 import { useSoundContext } from '../context/sound'
 import { useSettingsContext } from '../context/settings'
 import SettingsModal from './SettingsModal'
+import { DIFFICULTY_LABEL } from '../context/difficulty'
 import { MODE_LABEL, REVIEW_LABEL } from '../data/modes'
 import { LEVELS } from '../data/levels'
 import { dueReviewCount } from '../utils/reviewQueue'
@@ -17,7 +18,7 @@ export default function TitleScreen({
   onProgress: () => void
 }) {
   const sound = useSoundContext()
-  const { retryOnMiss, practiceMode, listeningMode } = useSettingsContext()
+  const { difficulty, listeningMode } = useSettingsContext()
   const [showSettings, setShowSettings] = useState(false)
   // Spaced repetition only works if due questions actually get answered on
   // time, so the title says when some are waiting rather than leaving them to
@@ -102,8 +103,7 @@ export default function TitleScreen({
           }}
           title="クリックして設定を変更"
         >
-          {retryOnMiss ? '🔄 やり直しモード' : '⏩ 一発勝負モード'}
-          {practiceMode && '・練習'}
+          {DIFFICULTY_LABEL[difficulty]}
           {listeningMode && '・🎧'}
         </button>
         <button

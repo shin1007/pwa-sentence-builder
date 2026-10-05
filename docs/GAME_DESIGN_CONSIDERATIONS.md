@@ -158,6 +158,12 @@
   - `react(only-export-components)`（3件）: コンポーネントと非コンポーネントを同じモジュールから export していると React Fast Refresh が効かない。`estimateTileWidth` を `components/tileWidth.ts` に、コンテキスト本体とフックを `context/sound.ts` / `context/settings.ts` に分離し、`SoundContext.tsx` / `SettingsContext.tsx` はプロバイダだけを export するようにした。ファイル名の大文字小文字だけが違う名前（`soundContext.ts`）は、Windows/macOSの大文字小文字を区別しないファイルシステムで `SoundContext.tsx` に解決されてしまうため避けている。
 - ✅ **Windowsで `npm test` が1件落ちる**: `core.autocrlf=true` の環境では作業ツリーのファイルがCRLFになり、生成物 `src/data/posLexicon.generated.ts` を生成結果とバイト比較するテストが失敗していた（CIのLinuxでは通るので見過ごされていた）。`.gitattributes` で全テキストを `eol=lf` に固定した。CEFR-J の CSV は配布元のまま残すため `-text` で除外。
 - ❌調査済み（対応しない）**バンドルに全1,600問が同梱**: `dist/assets/index-*.js` は334kB（gzip 105kB）で、その大半が問題バンク。レベル別に動的importすれば初回パースは軽くなるが、**このアプリでは意味がない**。`vite.config.ts` のworkbox設定が `globPatterns: ['**/*.{js,css,html,png,svg,ico,woff2}']` で全JSチャンクをプリキャッシュするため、分割してもService Worker導入時に結局すべてダウンロードされる。プリキャッシュ対象から外せば初回は軽くなるが、未訪問のレベルがオフラインで遊べなくなる。オフラインで完結することの方がこのアプリには重要なので、現状維持とする。
+- ✅ **`GameScreen.tsx` が1,400行あった**: 出題・採点・ドラッグ・アニメーションがすべて1つのコンポーネントにあり、読むのも直すのも重かった。動きは変えずに次を切り出した（1,159行に）。
+  - 出題とタイルの組み立て、タイルの表示（`answerFor` / `initialQuestions` / `displayFor` など）→ `src/components/gameBoard.ts`
+  - 正解時の得点と PERFECT!/GREAT!/GOOD! の判定 → `scoreCorrect()`（`src/utils/scoring.ts`、テストあり）
+  - ドラッグ&ドロップ → `src/hooks/useTileDrag.ts`。どこに置けるかの判断（やり直しモードでは次の欄だけ、など）は `GameScreen` 側に残した
+  - タイルが飛んでいくアニメーション（FLIP）→ `src/hooks/useFlip.ts`
+  - 残りの大部分は1問の進行（`resolve()` と、時間切れ・並べ直し・次の問題への切り替え）。状態がタイマーや読み上げの完了と絡むので、`useReducer` への置き換えはテストの土台を作ってからにする。
 - **多端末での実機QA必須**: 横画面固定・フルスクリーン・音声合成など多くのブラウザAPIに依存するため、Android Chrome / iOS Safari / 低スペック端末での実機確認が欠かせない（CIではカバーできない領域）。
 
 ## 9. 運用・グロース観点

@@ -55,3 +55,35 @@ export function timeBonus(timeLeft: number, timeLimitSec: number): number {
   const remaining = Math.min(Math.max(timeLeft, 0), timeLimitSec) / timeLimitSec
   return Math.round(MAX_TIME_BONUS * remaining)
 }
+
+export type JudgeTone = 'perfect' | 'great' | 'good' | 'miss'
+
+/**
+ * Points and the PERFECT!/GREAT!/GOOD! callout for a clean correct answer.
+ * `combo` is the streak before this answer: 3+ in a row pays ×1.5, 5+ pays ×2.
+ * Speed sets the grade, and a hesitant answer (see isShakyAnswer) can't be a
+ * PERFECT. Practice runs have no clock, so no speed bonus and no grade.
+ */
+export function scoreCorrect({
+  combo,
+  timeLeft,
+  timeLimit,
+  timed,
+  shaky,
+}: {
+  combo: number
+  timeLeft: number
+  timeLimit: number
+  timed: boolean
+  shaky: boolean
+}): { gained: number; label: string; tone: JudgeTone } {
+  const multiplier = combo >= 5 ? 2 : combo >= 3 ? 1.5 : 1
+  const bonus = timed ? timeBonus(timeLeft, timeLimit) : 0
+  const gained = Math.round(100 * multiplier) + bonus
+  if (!timed) return { gained, label: 'NICE!', tone: 'great' }
+  if (shaky) return { gained, label: 'GOOD!', tone: 'good' }
+  const speed = timeLimit > 0 ? timeLeft / timeLimit : 0
+  if (speed >= 0.6) return { gained, label: 'PERFECT!', tone: 'perfect' }
+  if (speed >= 0.35) return { gained, label: 'GREAT!', tone: 'great' }
+  return { gained, label: 'GOOD!', tone: 'good' }
+}
